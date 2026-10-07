@@ -16,7 +16,7 @@ Works with OPNsense 24.7 and later.
 
 ## Install
 
-In Omini: **Settings → Plugins**, address `https://github.com/riccardoalv/omini-plugin-opnsense`, **Install**. Then **Integrations → Add → OPNsense**.
+OPNsense is in Omini's plugin catalog: **Integrations → Add → OPNsense** installs it and opens its form (or **Settings → Plugins → Available**). It can also be installed from its address, `https://github.com/riccardoalv/omini-plugin-opnsense`.
 
 ## Create the API user in OPNsense
 
