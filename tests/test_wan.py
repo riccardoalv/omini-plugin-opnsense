@@ -53,6 +53,7 @@ ROWS = [
         "status": "up",
         "is_physical": False,
         "macaddr": "58:9c:fc:00:00:01",
+        "members": {"vtnet0": {"flags": ["learning"]}, "mlxen0": {"flags": ["learning"]}},
         "ipv4": [{"ipaddr": "192.168.1.1/24"}],
         "gateways": [],
     },
@@ -145,6 +146,8 @@ def test_connectors_and_virtual_nics(opnsense, cfg):
         None,
     )
     assert ports["tailscale0"].type == "tunnel" and ports["bridge0"].type == "bridge"
+    # The LAN bridge runs at its physical member's speed (the 10G SFP+), not the VM NIC's.
+    assert ports["bridge0"].speed_mbps == 10000 and ports["bridge0"].connector is None
 
 
 def test_connector_of_a_port_that_is_down(opnsense, cfg):

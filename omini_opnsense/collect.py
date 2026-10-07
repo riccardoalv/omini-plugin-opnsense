@@ -211,8 +211,10 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
         media = (row.get("media") or "").strip()
         up = row.get("status") == "up"
         speed = speed_from_media(media) or speed_from_rate(stats.get("line rate"))
-        if kind in ("other", "tunnel", "bridge"):
+        if kind in ("other", "tunnel"):
             speed = None  # a virtual NIC reports a made-up speed
+        if kind == "bridge":
+            speed = bridge_speed(row, by_device)
         duplex = "full" if "full-duplex" in media else "half" if "half-duplex" in media else None
         wan = is_wan(row)
         parent = (row.get("vlan") or {}).get("parent")
@@ -250,6 +252,17 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
             )
         )
     return out, logical, via
+
+
+def bridge_speed(row: dict[str, Any], by_device: dict[str, dict[str, Any]]) -> int | None:
+    """A bridge (e.g. the LAN joining a 10G port and a VM's NIC) runs at the
+    speed of its fastest physical member; virtual NICs do not count."""
+    speeds = [
+        speed_from_media((by_device.get(m) or {}).get("media") or "")
+        for m in (row.get("members") or {})
+        if interface_type(m, by_device.get(m)) == "ethernet"
+    ]
+    return max((s for s in speeds if s), default=None)
 
 
 def is_wan(row: dict[str, Any]) -> bool:
