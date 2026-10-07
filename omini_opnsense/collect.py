@@ -98,18 +98,62 @@ def uptime_seconds(text: Any) -> int | None:
     return ((days * 24 + h) * 60 + mi) * 60 + s
 
 
-def interface_type(device: str) -> str:
-    if re.match(r"^(vlan\d|.*_vlan\d|\w+\.\d+$)", device):
+# NICs of a hypervisor (OPNsense running as a VM): no physical jack.
+VIRTUAL_NIC = re.compile(r"^(vtnet|xn|hn|vmx|em_virt)\d")
+COPPER = re.compile(r"base-?T", re.IGNORECASE)  # 1000baseT, 2500Base-T, 10Gbase-T, 100baseTX
+FIBER_OR_DAC = re.compile(
+    r"base-?(SR|LR|ER|ZR|LRM|SX|LX|ZX|BX|CX|CR|KR|Twinax|AOC|SFI)", re.IGNORECASE
+)
+
+
+def interface_type(device: str, row: dict[str, Any] | None = None) -> str:
+    row = row or {}
+    if row.get("vlan") or re.match(r"^(vlan\d|.*_vlan\d|\w+\.\d+$)", device):
         return "vlan"
     if device.startswith(("lagg", "lag")):
         return "lag"
     if device.startswith("bridge"):
         return "bridge"
-    if device.startswith(("wg", "ovpn", "tun", "tap", "gif", "gre", "ipsec")):
+    if device.startswith(
+        (
+            "wg",
+            "ovpn",
+            "tun",
+            "tap",
+            "gif",
+            "gre",
+            "ipsec",
+            "tailscale",
+            "ppp",
+            "pppoe",
+            "l2tp",
+            "zt",
+        )
+    ):
         return "tunnel"
     if device.startswith(("ath", "iwm", "iwn", "wlan", "iwlwifi")):
         return "wireless"
+    if VIRTUAL_NIC.match(device):
+        return "other"
     return "ethernet"
+
+
+def connector(row: dict[str, Any], speed: int | None) -> str | None:
+    """RJ45 or SFP, from the current media; when the port is down, from the
+    media it supports (only if they all agree: some drivers list everything)."""
+    media = (row.get("media") or "").strip()
+    kinds = []
+    if media and media != "autoselect":
+        kinds = [media]
+    else:
+        kinds = [m for m in row.get("supported_media") or [] if m.strip() != "autoselect"]
+    copper = any(COPPER.search(m) and not FIBER_OR_DAC.search(m) for m in kinds)
+    fiber = any(FIBER_OR_DAC.search(m) for m in kinds)
+    if copper == fiber:  # nothing known, or mixed
+        return None
+    if copper:
+        return "rj45"
+    return "qsfp" if speed and speed >= 40_000 else "sfp"
 
 
 def optional(what: str, missing: list[str], fn: Callable[[], T], default: T) -> T:
@@ -146,23 +190,36 @@ def system_information(c: Client) -> dict[str, Any]:
         raise PluginError(f"{c.base} does not look like OPNsense (no system API)") from e
 
 
-def interfaces(c: Client) -> tuple[list[Interface], dict[str, str]]:
-    """Ports, and logical name → device (lan → igb1) for DHCP leases."""
+def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, str]]:
+    """Ports; logical name → device (lan → igb1); gateway address → device."""
     data = c.get(
         "/api/interfaces/overview/interfaces_info/1", "/api/interfaces/overview/interfacesInfo/1"
     )
+    rows = [r for r in data.get("rows", []) if r.get("device") and not SKIP.match(r["device"])]
+    by_device = {r["device"]: r for r in rows}
     out: list[Interface] = []
     logical: dict[str, str] = {}
-    for row in data.get("rows", []):
-        device = row.get("device") or ""
-        if not device or SKIP.match(device):
-            continue
+    via: dict[str, str] = {}
+    for row in rows:
+        device = row["device"]
         if row.get("identifier"):
             logical[row["identifier"]] = device
+        for address in row.get("gateways") or []:
+            via[str(address)] = device
         stats = row.get("statistics") or {}
+        kind = interface_type(device, row)
         media = (row.get("media") or "").strip()
+        up = row.get("status") == "up"
         speed = speed_from_media(media) or speed_from_rate(stats.get("line rate"))
+        if kind in ("other", "tunnel", "bridge"):
+            speed = None  # a virtual NIC reports a made-up speed
         duplex = "full" if "full-duplex" in media else "half" if "half-duplex" in media else None
+        wan = is_wan(row)
+        parent = (row.get("vlan") or {}).get("parent")
+        if wan and not parent and kind == "tunnel":
+            parent = carrier(rows)  # PPPoE: the port it runs on
+        if wan and not speed and parent:
+            speed = link_speed(parent, by_device)
         ips = [a["ipaddr"] for a in row.get("ipv4") or [] if a.get("ipaddr")]
         ips += [
             a["ipaddr"]
@@ -176,20 +233,59 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str]]:
             Interface(
                 name=device,
                 description=description or None,
-                type=interface_type(device),
+                type=kind,
+                connector=connector(row, speed) if kind in ("ethernet", "lag") else None,
                 mac=mac(row.get("macaddr_hw") or row.get("macaddr")),
-                up=row.get("status") == "up",
-                speed_mbps=speed if row.get("status") == "up" else None,
-                duplex=duplex,
+                up=up,
+                speed_mbps=speed if up and speed else None,
+                duplex=duplex if kind not in ("other", "tunnel", "bridge") else None,
                 media=media or None,
                 ips=ips or None,
+                wan=True if wan else None,
+                parent=parent or None,
                 rx_bytes=counter(stats.get("bytes received")),
                 tx_bytes=counter(stats.get("bytes transmitted")),
                 rx_errors=counter(stats.get("input errors")),
                 tx_errors=counter(stats.get("output errors")),
             )
         )
-    return out, logical
+    return out, logical, via
+
+
+def is_wan(row: dict[str, Any]) -> bool:
+    """An interface with upstream gateways (OPNsense lists them per interface)."""
+    return bool(row.get("gateways")) or str(row.get("identifier", "")).startswith("wan")
+
+
+def carrier(rows: list[dict[str, Any]]) -> str | None:
+    """The port a PPPoE/PPP WAN runs on. OPNsense does not expose it in this
+    API; the usual setup is a VLAN with no role assigned (e.g. vlan0.2000 for
+    an ISP that tags PPPoE), else a port whose description says WAN."""
+    vlans = [r for r in rows if r.get("vlan") and not r.get("identifier")]
+    if len(vlans) == 1:
+        return vlans[0]["device"]
+    named = [
+        r["device"]
+        for r in rows
+        if "wan" in str(r.get("description", "")).lower()
+        and interface_type(r["device"], r) == "ethernet"
+    ]
+    return named[0] if len(named) == 1 else None
+
+
+def link_speed(device: str, by_device: dict[str, dict[str, Any]]) -> int | None:
+    """Speed of a port, following VLANs down to the physical port."""
+    for _ in range(4):
+        row = by_device.get(device)
+        if not row:
+            return None
+        speed = speed_from_media((row.get("media") or "").strip())
+        if speed:
+            return speed
+        device = (row.get("vlan") or {}).get("parent")
+        if not device:
+            return None
+    return None
 
 
 def traffic(c: Client, ifaces: list[Interface]) -> None:
@@ -279,7 +375,8 @@ GATEWAY_STATUS = {
 }
 
 
-def gateways(c: Client) -> list[Gateway]:
+def gateways(c: Client, via: dict[str, str] | None = None) -> list[Gateway]:
+    """via: gateway address → interface (from the interfaces' gateway lists)."""
     data = c.get("/api/routes/gateway/status")
     out = []
     for g in data.get("items", []):
@@ -292,6 +389,7 @@ def gateways(c: Client) -> list[Gateway]:
             Gateway(
                 name=g["name"],
                 address=address if address and address != "~" else None,
+                interface=(via or {}).get(address or "") or (via or {}).get(g.get("monitor") or ""),
                 status=status,
                 rtt_ms=None if no_data else number(g.get("delay")),
                 loss_pct=None if no_data else number(g.get("loss")),
@@ -334,7 +432,7 @@ def collect(cfg: Config) -> list[Device]:
     try:
         info = system_information(c)
         missing: list[str] = []
-        ifaces, _logical = optional("interfaces", missing, lambda: interfaces(c), ([], {}))
+        ifaces, _logical, via = optional("interfaces", missing, lambda: interfaces(c), ([], {}, {}))
         optional("traffic", missing, lambda: traffic(c, ifaces), None)
         versions = info.get("versions") or []
         os_version = versions[0].rsplit("-", 1)[0] if versions else None
@@ -357,7 +455,7 @@ def collect(cfg: Config) -> list[Device]:
             interfaces=ifaces or None,
             arp=optional("arp", missing, lambda: arp(c), []) or None,
             dhcp_leases=leases(c, missing) or None,
-            gateways=optional("gateways", missing, lambda: gateways(c), []) or None,
+            gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
         )
         if missing:
             log.warning("missing privileges: %s", ", ".join(sorted(set(missing))))
