@@ -148,6 +148,10 @@ def test_connectors_and_virtual_nics(opnsense, cfg):
     assert ports["tailscale0"].type == "tunnel" and ports["bridge0"].type == "bridge"
     # The LAN bridge runs at its physical member's speed (the 10G SFP+), not the VM NIC's.
     assert ports["bridge0"].speed_mbps == 10000 and ports["bridge0"].connector is None
+    assert (
+        ports["bridge0"].members == sorted(ports["bridge0"].members)
+        and "mlxen0" in ports["bridge0"].members
+    )
 
 
 def test_connector_of_a_port_that_is_down(opnsense, cfg):

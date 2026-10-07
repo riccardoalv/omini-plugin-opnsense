@@ -254,6 +254,7 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
                 ips=ips or None,
                 wan=True if wan else None,
                 parent=parent or None,
+                **members_of(row, kind),
                 rx_bytes=counter(stats.get("bytes received")),
                 tx_bytes=counter(stats.get("bytes transmitted")),
                 rx_errors=counter(stats.get("input errors")),
@@ -261,6 +262,14 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
             )
         )
     return out, logical, via
+
+
+def members_of(row: dict[str, Any], kind: str) -> dict[str, Any]:
+    """A bridge's ports (``members``, in the SDK of Omini 0.2.1 and later)."""
+    if kind != "bridge" or "members" not in Interface.model_fields:
+        return {}
+    names = sorted(row.get("members") or {})
+    return {"members": names} if names else {}
 
 
 def bridge_speed(row: dict[str, Any], by_device: dict[str, dict[str, Any]]) -> int | None:
