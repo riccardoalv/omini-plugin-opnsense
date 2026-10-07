@@ -41,6 +41,11 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
 
 OPNsense uses a self-signed certificate by default, so *Verify the TLS certificate* is off by default; turn it on if your firewall has a trusted certificate.
 
+## Known limitations
+
+- **PPPoE WANs:** OPNsense's API does not say which port carries a PPPoE link. The plugin uses the only VLAN with no role assigned (e.g. `vlan0.2000` for an ISP that tags PPPoE), else a port described as "WAN". When neither is found, the WAN shows no link speed (never a wrong one).
+- **Traffic** is the average between two collections (every minute by default), not an instantaneous value.
+
 ## Development
 
 The plugin uses [uv](https://docs.astral.sh/uv/) and expects the Omini repository next to it (the SDK is in `../omini/sdk/python`):
