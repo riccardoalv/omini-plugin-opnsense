@@ -1,0 +1,6 @@
+{"rows":[
+ {"address":"192.168.1.102","hwaddr":"aa:bb:cc:dd:ee:03","hostname":"tv","client_id":"01:aa:bb:cc:dd:ee:03","expire":0,"if":"igb1","if_descr":"LAN","if_name":"lan","mac_info":"LG Electronics","is_reserved":"0"},
+ {"address":"192.168.1.103","hwaddr":"aa:bb:cc:dd:ee:04","hostname":"*","expire":4102444800,"if":"igb1","if_name":"lan"},
+ {"address":"192.168.1.104","hwaddr":"aa:bb:cc:dd:ee:05","hostname":"old","expire":1000,"if":"igb1","if_name":"lan"},
+ {"address":"fd00::50","hwaddr":"aa:bb:cc:dd:ee:06","hostname":"v6","expire":0,"if":"igb1"}
+],"interfaces":{"lan":"LAN"},"rowCount":4,"total":4,"current":1}

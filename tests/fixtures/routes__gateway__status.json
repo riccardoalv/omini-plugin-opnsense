@@ -1,0 +1,5 @@
+{"items":[
+ {"name":"WAN_DHCP","address":"203.0.113.1","status":"none","status_translated":"Online","loss":"0.0 %","delay":"1.2 ms","stddev":"0.3 ms","monitor":"203.0.113.1"},
+ {"name":"WAN2_PPPOE","address":"~","status":"down","status_translated":"Offline","loss":"100.0 %","delay":"0.0 ms","stddev":"0.0 ms","monitor":"198.51.100.1"},
+ {"name":"VPN_GW","address":"10.8.0.1","status":"none","status_translated":"Online","loss":"~","delay":"~","stddev":"~","monitor":"~"}
+],"status":"ok"}

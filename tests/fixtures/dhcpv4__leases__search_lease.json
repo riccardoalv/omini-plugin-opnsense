@@ -1,0 +1,4 @@
+{"rows":[
+ {"address":"192.168.1.100","mac":"aa:bb:cc:dd:ee:07","hostname":"phone","starts":"2026/10/06 10:00:00","ends":"2026/10/06 12:00:00","binding":"active","state":"active","type":"dynamic","status":"online","if":"lan","if_descr":"LAN"},
+ {"address":"192.168.1.101","mac":"aa:bb:cc:dd:ee:08","hostname":"gone","starts":"","ends":"","binding":"free","state":"expired","type":"dynamic","status":"offline","if":"lan"}
+],"interfaces":{"lan":"LAN"},"rowCount":2,"total":2,"current":1}

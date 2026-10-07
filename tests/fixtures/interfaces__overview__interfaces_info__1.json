@@ -1,0 +1,8 @@
+{"rows":[
+ {"device":"igb0","identifier":"wan","description":"WAN","enabled":true,"status":"up","macaddr":"00:0d:b9:aa:bb:ca","macaddr_hw":"00:0d:b9:aa:bb:ca","is_physical":true,"media":"2500Base-T <full-duplex>","media_raw":"Ethernet autoselect (2500Base-T <full-duplex>)","ipv4":[{"ipaddr":"203.0.113.10/24"}],"ipv6":[],"statistics":{"line rate":"2500000000 bit/s","bytes received":"98765432100","bytes transmitted":"1234567890","input errors":"0","output errors":"0"}},
+ {"device":"igb1","identifier":"lan","description":"LAN","enabled":true,"status":"up","macaddr":"00:0d:b9:aa:bb:cc","macaddr_hw":"00:0d:b9:aa:bb:cc","is_physical":true,"media":"1000baseT <full-duplex>","ipv4":[{"ipaddr":"192.168.1.1/24"}],"ipv6":[{"ipaddr":"fe80::20d:b9ff:feaa:bbcc/64"},{"ipaddr":"fd00::1/64"}],"statistics":{"line rate":"1000000000 bit/s","bytes received":"123456789","bytes transmitted":"987654321","input errors":"2","output errors":"0"}},
+ {"device":"igb2","identifier":"","description":"Unassigned Interface","enabled":false,"status":"no carrier","macaddr":"00:0d:b9:aa:bb:cd","is_physical":true,"media":"autoselect","ipv4":[],"ipv6":[],"statistics":{"line rate":"0 bit/s"}},
+ {"device":"vtnet0_vlan20","identifier":"opt1","description":"IOT","enabled":true,"status":"up","macaddr":"00:0d:b9:aa:bb:cc","is_physical":false,"media":"","ipv4":[{"ipaddr":"10.0.20.1/24"}],"ipv6":[]},
+ {"device":"lo0","identifier":"lo0","description":"Loopback","status":"up","ipv4":[{"ipaddr":"127.0.0.1/8"}]},
+ {"device":"enc0","identifier":"","description":"Unassigned Interface","status":"up"}
+],"rowCount":6,"total":6,"current":1}

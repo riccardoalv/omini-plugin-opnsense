@@ -1,0 +1,34 @@
+id: opnsense
+name: OPNsense
+version: 0.1.0
+protocol: 1
+entrypoint: main.py
+timeout_s: 60
+description: >-
+  OPNsense firewall through its official REST API: interfaces with link speed
+  and traffic, ARP, DHCP leases (ISC, Kea or dnsmasq), CPU, memory, uptime and
+  gateway status. Read-only.
+author: Omini
+homepage: https://github.com/riccardoalv/omini-plugin-opnsense
+fields:
+  - key: url
+    type: url
+    label: Address
+    required: true
+    help: The OPNsense web interface, e.g. https://192.168.1.1
+  - key: api_key
+    type: string
+    label: API key
+    required: true
+    help: >-
+      System → Access → Users: create a user for Omini, give it the privileges
+      listed in the plugin's README, then add an API key to it.
+  - key: api_secret
+    type: secret
+    label: API secret
+    required: true
+  - key: verify_tls
+    type: bool
+    label: Verify the TLS certificate
+    default: false
+    help: OPNsense uses a self-signed certificate by default; turn this on if yours is trusted.

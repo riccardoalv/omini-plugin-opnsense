@@ -1,0 +1,6 @@
+{"rows":[
+ {"mac":"aa:bb:cc:dd:ee:01","ip":"192.168.1.50","intf":"igb1","intf_description":"LAN","expired":false,"expires":1187,"permanent":false,"type":"ethernet","manufacturer":"Apple, Inc.","hostname":""},
+ {"mac":"00:0d:b9:aa:bb:cc","ip":"192.168.1.1","intf":"igb1","intf_description":"LAN","expired":false,"permanent":true,"type":"ethernet"},
+ {"mac":"aa:bb:cc:dd:ee:02","ip":"192.168.1.51","intf":"igb1","expired":true,"permanent":false},
+ {"mac":"(incomplete)","ip":"192.168.1.99","intf":"igb1","expired":false,"permanent":false}
+],"rowCount":4,"total":4,"current":1}
