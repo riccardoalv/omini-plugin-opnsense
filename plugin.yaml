@@ -6,7 +6,7 @@ entrypoint: main.py
 timeout_s: 60
 description: >-
   OPNsense firewall through its official REST API: interfaces with link speed
-  and traffic, ARP, DHCP leases (ISC, Kea or dnsmasq), CPU, memory, uptime and
+  and traffic, ARP, DHCP leases (ISC, Kea or dnsmasq), CPU, memory, swap, load, disks, temperatures, uptime, pending updates and
   gateway status. Read-only.
 author: Omini
 homepage: https://github.com/riccardoalv/omini-plugin-opnsense

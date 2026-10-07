@@ -9,7 +9,8 @@
 | Interfaces: name, description, status, MAC, IPs, **link speed / media** (e.g. `2500Base-T <full-duplex>`), traffic and error counters | Ports of the firewall on the map, link speed, traffic |
 | ARP table | Which IP and MAC are on which interface |
 | DHCP leases — ISC, Kea and dnsmasq (whichever is in use) | Names of devices the network scan only knows by MAC |
-| Hostname, version, CPU, memory, uptime | Firewall health |
+| Hostname, version, CPU, memory, swap, load, disks, temperatures, uptime | Firewall health |
+| Pending firmware updates (from the last check made in OPNsense) | Firewall health |
 | Gateways: status, latency, loss | WAN uplinks up/down |
 
 Works with OPNsense 24.7 and later.
@@ -26,7 +27,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
 
    | Privilege | For |
    |---|---|
-   | Lobby: Dashboard | hostname, version, CPU, memory, uptime (**required**) |
+   | Lobby: Dashboard | hostname, version, CPU, memory, swap, load, disks, temperatures, uptime (**required**) |
    | Status: Interfaces | ports, link speed, IPs, counters |
    | Reporting: Traffic | traffic counters of VLANs and other virtual interfaces |
    | Diagnostics: ARP Table | ARP table |
@@ -34,6 +35,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Services: DHCP: Kea(v4) | leases of Kea, if you use it |
    | Services: Dnsmasq DNS/DHCP: Settings | leases of dnsmasq (the default DHCP server since 25.7) |
    | System: Gateways | gateway status |
+   | System: Firmware | pending updates (Omini never starts a check or an update) |
    | **System: Deny config write** | **recommended**: some of the privileges above also allow changes; this one blocks configuration writes |
 
 2. Edit the user again and, under **API keys**, click **+**: OPNsense downloads a file with the **key** and the **secret**.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -18,6 +19,13 @@ from omini_sdk import (
     PluginError,
     log,
 )
+
+try:  # system health, in the SDK of Omini 0.2 and later
+    from omini_sdk import Firmware, Storage, Temperature
+
+    HEALTH = True
+except ImportError:  # an older Omini: the plugin still works, without them
+    HEALTH = False
 
 from omini_opnsense.client import Client, Forbidden, NotFound
 
@@ -36,6 +44,7 @@ PRIVILEGES = {
     "dhcp": "Status: DHCP leases (ISC), Services: DHCP: Kea(v4) or Services: Dnsmasq DNS/DHCP",
     "system": "Lobby: Dashboard",
     "gateways": "System: Gateways",
+    "firmware": "System: Firmware",
 }
 
 
@@ -422,9 +431,156 @@ def memory_pct(c: Client) -> float | None:
     return round(used / total * 100, 1)
 
 
-def uptime(c: Client) -> int | None:
-    data = c.get("/api/diagnostics/system/system_time", "/api/diagnostics/system/systemTime")
-    return uptime_seconds(data.get("uptime"))
+def system_time(c: Client) -> dict[str, Any]:
+    """Uptime and load average."""
+    return c.get("/api/diagnostics/system/system_time", "/api/diagnostics/system/systemTime")
+
+
+def load_avg(text: Any) -> list[float] | None:
+    """'0.34, 0.35, 0.33' → [0.34, 0.35, 0.33] (1, 5 and 15 minutes)."""
+    if not isinstance(text, str):
+        return None
+    values = [number(v) for v in re.split(r"[,\s]+", text.strip()) if v]
+    values = [v for v in values if v is not None and v >= 0]
+    return values[:3] or None
+
+
+def swap_pct(c: Client) -> float | None:
+    data = c.get("/api/diagnostics/system/system_swap", "/api/diagnostics/system/systemSwap")
+    rows = data.get("swap") or []
+    total = sum(number(r.get("total")) or 0 for r in rows)
+    used = sum(number(r.get("used")) or 0 for r in rows)
+    return round(used / total * 100, 1) if total else None
+
+
+def storage(c: Client) -> list[Storage]:
+    """Mounted file systems. ZFS datasets share their pool's space, so each
+    pool is one entry (named after its mount closest to /) with the pool's use."""
+    data = c.get("/api/diagnostics/system/system_disk", "/api/diagnostics/system/systemDisk")
+    out: list[Storage] = []
+    pools: dict[str, dict[str, Any]] = {}
+    for row in data.get("devices") or []:
+        mount = row.get("mountpoint")
+        total = number(row.get("total_bytes"))
+        used = number(row.get("used_bytes")) or 0
+        if not mount or not total:
+            continue
+        if row.get("type") == "zfs":
+            name = str(row.get("device") or "").split("/")[0]
+            pool = pools.setdefault(
+                name, {"mounts": [], "used": 0, "free": number(row.get("available_bytes")) or 0}
+            )
+            pool["mounts"].append(mount)
+            pool["used"] += used
+            continue
+        out.append(
+            Storage(
+                mount=mount,
+                device=row.get("device") or None,
+                fs_type=row.get("type") or None,
+                total_bytes=int(total),
+                used_bytes=int(used),
+            )
+        )
+    for name, pool in pools.items():
+        mount = min(pool["mounts"], key=lambda m: (m.count("/") if m != "/" else 0, len(m)))
+        out.append(
+            Storage(
+                mount=mount,
+                device=name,
+                fs_type="zfs",
+                total_bytes=int(pool["used"] + pool["free"]),
+                used_bytes=int(pool["used"]),
+            )
+        )
+    return sorted(out, key=lambda st: (st.mount != "/", st.mount))
+
+
+def temperature_kind(device: str) -> str:
+    if device.startswith(("dev.cpu", "hw.acpi.thermal.cpu")):
+        return "cpu"
+    if re.match(r"^(ada|da|nvme|nvd)\d", device) or "smart" in device:
+        return "disk"
+    if "acpi" in device or "thermal" in device or "pch" in device:
+        return "board"
+    return "other"
+
+
+def temperatures(c: Client) -> list[Temperature]:
+    """Sensors OPNsense reads (none on most virtual machines)."""
+    data = c.get(
+        "/api/diagnostics/system/system_temperature",
+        "/api/diagnostics/system/systemTemperature",
+    )
+    rows = data if isinstance(data, list) else data.get("rows") or []
+    out = []
+    for row in rows:
+        celsius = number(row.get("temperature"))
+        device = str(row.get("device") or "")
+        if celsius is None or not device:
+            continue
+        kind = temperature_kind(device)
+        seq = row.get("device_seq")
+        name = row.get("type_translated") or row.get("type") or device
+        if kind == "cpu" and seq not in (None, ""):
+            name = f"CPU {seq}"
+        out.append(Temperature(sensor=str(name), kind=kind, celsius=celsius))
+    return out
+
+
+def flag(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower() in ("1", "true", "yes")
+
+
+def firmware(c: Client) -> Firmware | None:
+    """What the firewall knows from its last update check. Omini never starts
+    a check itself (read-only); OPNsense runs it from the GUI or its cron."""
+    data = c.get("/api/core/firmware/status")
+    product = data.get("product") or {}
+    current = product.get("product_version") or None
+    check = product.get("product_check") or {}
+    latest = check.get("product_version") or product.get("product_latest") or None
+    status = str(data.get("status") or "")
+    if not check:
+        # Never checked: only the installed version is known.
+        return Firmware(current=current) if current else None
+    count = number(check.get("updates"))
+    if count is None:
+        count = sum(
+            len(check.get(k) or [])
+            for k in ("new_packages", "upgrade_packages", "reinstall_packages")
+        )
+    available = status in ("update", "upgrade") or bool(count)
+    checked = check.get("last_check")
+    return Firmware(
+        current=current,
+        latest=latest,
+        update_available=available,
+        updates=int(count) if count is not None else None,
+        needs_reboot=flag(check.get("upgrade_needs_reboot") or check.get("needs_reboot"))
+        if available
+        else None,
+        checked_at=parse_time(checked),
+    )
+
+
+def parse_time(text: Any) -> str | None:
+    """OPNsense dates ('Wed Oct 7 2:54:18 -04 2026', or ISO) → ISO 8601."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = text.strip()
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%a %b %d %H:%M:%S %Z %Y"):
+        try:
+            v = re.sub(r" ([+-]\d{2})(?= \d{4}$)", r" \g<1>00", t)
+            return datetime.strptime(v, fmt).isoformat()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(t).isoformat()
+    except ValueError:
+        return None
 
 
 def cpu_pct(c: Client) -> float | None:
@@ -435,6 +591,17 @@ def cpu_pct(c: Client) -> float | None:
     if total is None and number(event.get("idle")) is not None:
         total = 100 - number(event.get("idle"))
     return total
+
+
+def health(c: Client, clock: dict[str, Any], missing: list[str]) -> dict[str, Any]:
+    """Load, swap, disks, temperatures and pending updates."""
+    return {
+        "swap_pct": optional("system", missing, lambda: swap_pct(c), None),
+        "load_avg": load_avg(clock.get("loadavg")),
+        "temperatures": optional("system", missing, lambda: temperatures(c), []) or None,
+        "storage": optional("system", missing, lambda: storage(c), []) or None,
+        "firmware": optional("firmware", missing, lambda: firmware(c), None),
+    }
 
 
 # --- plugin entry points -------------------------------------------------------
@@ -453,6 +620,7 @@ def collect(cfg: Config) -> list[Device]:
         lan_mac = next((i.mac for i in ifaces if i.mac and i.description == "LAN"), None)
         ips = sorted({ip.split("/")[0] for i in ifaces for ip in (i.ips or []) if "." in ip})
         host = urlparse(c.base).hostname or c.base
+        clock = optional("system", missing, lambda: system_time(c), {})
         device = Device(
             key=lan_mac or (macs[0] if macs else host),
             name=info.get("name") or host,
@@ -460,7 +628,7 @@ def collect(cfg: Config) -> list[Device]:
             role="firewall",
             vendor="OPNsense",
             os_version=os_version,
-            uptime_s=optional("system", missing, lambda: uptime(c), None),
+            uptime_s=uptime_seconds(clock.get("uptime")),
             cpu_pct=optional("system", missing, lambda: cpu_pct(c), None),
             mem_pct=optional("system", missing, lambda: memory_pct(c), None),
             macs=macs or None,
@@ -469,6 +637,7 @@ def collect(cfg: Config) -> list[Device]:
             arp=optional("arp", missing, lambda: arp(c), []) or None,
             dhcp_leases=leases(c, missing) or None,
             gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
+            **(health(c, clock, missing) if HEALTH else {}),
         )
         if missing:
             log.warning("missing privileges: %s", ", ".join(sorted(set(missing))))

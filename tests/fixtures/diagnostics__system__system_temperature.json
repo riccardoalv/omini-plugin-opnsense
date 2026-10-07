@@ -1,0 +1,1 @@
+[{"device":"dev.cpu.0.temperature","device_seq":"0","temperature":"47.0","type":"cpu","type_translated":"CPU"},{"device":"dev.cpu.1.temperature","device_seq":"1","temperature":"49.0","type":"cpu","type_translated":"CPU"},{"device":"hw.acpi.thermal.tz0.temperature","device_seq":"0","temperature":"27.9","type":"zone","type_translated":"Zone"}]
