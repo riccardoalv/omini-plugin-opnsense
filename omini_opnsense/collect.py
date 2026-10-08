@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
+import math
 import re
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -27,6 +29,13 @@ try:  # system health, in the SDK of Omini 0.2 and later
 except ImportError:  # an older Omini: the plugin still works, without them
     HEALTH = False
 
+try:  # services, VPN peers, VLANs, DHCP pools, firewall states: Omini 0.3 and later
+    from omini_sdk import DhcpPool, FirewallStates, Service, Transceiver, Vlan, VpnPeer
+
+    EXTRAS = True
+except ImportError:
+    EXTRAS = False
+
 from omini_opnsense.client import Client, Forbidden, NotFound
 
 T = TypeVar("T")
@@ -45,6 +54,9 @@ PRIVILEGES = {
     "system": "Lobby: Dashboard",
     "gateways": "System: Gateways",
     "firmware": "System: Firmware",
+    "services": "Status: Services",
+    "vlans": "Interfaces: VLAN",
+    "states": "Diagnostics: Firewall statistics",
 }
 
 
@@ -199,8 +211,12 @@ def system_information(c: Client) -> dict[str, Any]:
         raise PluginError(f"{c.base} does not look like OPNsense (no system API)") from e
 
 
-def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, str]]:
-    """Ports; logical name → device (lan → igb1); gateway address → device."""
+def interfaces(
+    c: Client, vlan_config: dict[str, dict[str, Any]] | None = None
+) -> tuple[list[Interface], dict[str, str], dict[str, str]]:
+    """Ports; logical name → device (lan → igb1); gateway address → device.
+    vlan_config: VLAN device → {tag, parent, name}, from Interfaces → Devices → VLAN."""
+    vlan_config = vlan_config or {}
     data = c.get(
         "/api/interfaces/overview/interfaces_info/1", "/api/interfaces/overview/interfacesInfo/1"
     )
@@ -226,7 +242,8 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
             speed = bridge_speed(row, by_device)
         duplex = "full" if "full-duplex" in media else "half" if "half-duplex" in media else None
         wan = is_wan(row)
-        parent = (row.get("vlan") or {}).get("parent")
+        configured = vlan_config.get(device) or {}
+        parent = (row.get("vlan") or {}).get("parent") or configured.get("parent")
         if wan and not parent and kind == "tunnel":
             parent = carrier(rows)  # PPPoE: the port it runs on
         if wan and not speed and parent:
@@ -245,7 +262,9 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
                 name=device,
                 description=description or None,
                 type=kind,
-                connector=connector(row, speed) if kind in ("ethernet", "lag") else None,
+                connector=(connector(row, speed) or plugged_connector(row.get("sfp")))
+                if kind in ("ethernet", "lag")
+                else None,
                 mac=mac(row.get("macaddr_hw") or row.get("macaddr")),
                 up=up,
                 speed_mbps=speed if up and speed else None,
@@ -255,6 +274,11 @@ def interfaces(c: Client) -> tuple[list[Interface], dict[str, str], dict[str, st
                 wan=True if wan else None,
                 parent=parent or None,
                 **members_of(row, kind),
+                **newer_fields(
+                    Interface,
+                    vlan=vlan_tag(device, row, configured) if kind == "vlan" else None,
+                    transceiver=transceiver(row.get("sfp")) if kind == "ethernet" else None,
+                ),
                 rx_bytes=counter(stats.get("bytes received")),
                 tx_bytes=counter(stats.get("bytes transmitted")),
                 rx_errors=counter(stats.get("input errors")),
@@ -613,6 +637,406 @@ def health(c: Client, clock: dict[str, Any], missing: list[str]) -> dict[str, An
     }
 
 
+# --- VLANs, SFP modules, services, VPN, DHCP pools, firewall states ----------
+
+
+def newer_fields(model: type, **values: Any) -> dict[str, Any]:
+    """Fields an older SDK does not have are left out, so the plugin keeps
+    working on an older Omini."""
+    return {k: v for k, v in values.items() if v is not None and k in model.model_fields}
+
+
+def first_word(value: Any) -> str | None:
+    """'igb1 (00:0d:b9:aa:bb:cd) [LAN]' or 'vlan01 [IOT]' → 'igb1' / 'vlan01':
+    OPNsense's searches show some fields with a description appended."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.split()[0]
+
+
+def tag(value: Any) -> int | None:
+    n = number(value)
+    return int(n) if n is not None and 1 <= n <= 4094 else None
+
+
+def vlan_config(c: Client) -> dict[str, dict[str, Any]]:
+    """VLANs configured in Interfaces → Devices → VLAN, by device name."""
+    data = c.get(
+        "/api/interfaces/vlan_settings/search_item",
+        "/api/interfaces/vlan_settings/searchItem",
+        params={"rowCount": -1},
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in data.get("rows") or []:
+        device, vid = first_word(row.get("vlanif")), tag(row.get("tag"))
+        if not device or not vid:
+            continue
+        out[device] = {
+            "tag": vid,
+            "parent": first_word(row.get("if")),
+            "name": (row.get("descr") or "").strip() or None,
+        }
+    return out
+
+
+# Device names that carry the tag by construction: igb1_vlan20, igb1.20, vlan0.2000.
+TAG_IN_NAME = re.compile(r"(?:_vlan|\.)(\d{1,4})$")
+
+
+def vlan_tag(device: str, row: dict[str, Any], configured: dict[str, Any]) -> int | None:
+    """The VLAN id of a VLAN interface: from ifconfig, the VLAN settings or its name."""
+    vid = tag((row.get("vlan") or {}).get("tag")) or tag(row.get("vlan_tag"))
+    if vid or configured.get("tag"):
+        return vid or configured["tag"]
+    m = TAG_IN_NAME.search(device)
+    return tag(m.group(1)) if m else None
+
+
+def vlans(ifaces: list[Interface], config: dict[str, dict[str, Any]]) -> list[Vlan]:
+    """VLANs of the firewall: the configured ones, else the VLAN interfaces seen."""
+    by_name = {i.name: i for i in ifaces}
+    found: dict[str, dict[str, Any]] = {
+        device: {"tag": v["tag"], "name": v["name"]} for device, v in config.items()
+    }
+    for i in ifaces:
+        vid = getattr(i, "vlan", None)
+        if i.type == "vlan" and vid and i.name not in found:
+            found[i.name] = {"tag": vid, "name": None}
+    out = []
+    for device, v in found.items():
+        iface = by_name.get(device)
+        name = v["name"] or (iface.description if iface else None)
+        out.append(
+            Vlan(
+                id=v["tag"], name=name, interface=device, subnet=subnet_of(iface) if iface else None
+            )
+        )
+    return sorted(out, key=lambda vl: (vl.id, vl.interface or ""))
+
+
+def subnet_of(iface: Interface) -> str | None:
+    for ip in iface.ips or []:
+        try:
+            net = ipaddress.ip_interface(ip).network
+        except ValueError:
+            continue
+        if net.version == 4 and "/" in ip:
+            return str(net)
+    return None
+
+
+def dbm(value: Any) -> float | None:
+    """'0.55 mW (-2.59 dBm)' → -2.59; '0.55 mW' → -2.6."""
+    if not isinstance(value, str):
+        return None
+    m = re.search(r"(-?\d+(?:\.\d+)?)\s*dBm", value)
+    if m:
+        return float(m.group(1))
+    mw = number(value)
+    if mw is None or mw <= 0 or "mw" not in value.lower():
+        return None
+    return round(10 * math.log10(mw), 2)
+
+
+def plugged_connector(sfp: Any) -> str | None:
+    """The cage of a port with a module plugged in ('SFP/SFP+/SFP28 ...', 'QSFP+ ...')."""
+    plugged = str((sfp or {}).get("plugged") or "") if isinstance(sfp, dict) else ""
+    if plugged.upper().startswith("QSFP"):
+        return "qsfp"
+    if plugged.upper().startswith("SFP"):
+        return "sfp"
+    return None
+
+
+def transceiver(sfp: Any) -> Transceiver | None:
+    """The module in a port, as OPNsense reads it from ``ifconfig -v`` (only
+    drivers that can read the module's EEPROM report it). ``plugged`` is
+    '<class> <compliance> (<connector>)', e.g. 'SFP/SFP+/SFP28 10G Base-SR (LC)'."""
+    if not EXTRAS or not isinstance(sfp, dict) or not sfp.get("plugged"):
+        return None
+    plugged = str(sfp["plugged"]).strip()
+    m = re.match(r"^\S+\s+(.*?)\s*(?:\([^)]*\))?$", plugged)
+    kind = (m.group(1) if m else "") or None
+    lanes = sorted(
+        {int(k.split("_")[1]) for k in sfp if re.match(r"^lane_\d+_rx_power$", k)},
+    )
+    rx = [(dbm(sfp.get(f"lane_{n}_rx_power")), n) for n in lanes]
+    rx = [(p, n) for p, n in rx if p is not None]
+    weakest = min(rx) if rx else None  # the weakest lane is the one that matters
+
+    def text(key: str) -> str | None:
+        v = sfp.get(key)
+        return (v.strip() or None) if isinstance(v, str) else None
+
+    return Transceiver(
+        vendor=text("vendor"),
+        part=text("part_number"),
+        serial=text("serial_number"),
+        type=kind,
+        temperature_c=number(sfp.get("temperature")),
+        voltage_v=number(sfp.get("voltage")),
+        rx_power_dbm=weakest[0] if weakest else None,
+        bias_ma=number(sfp.get(f"lane_{weakest[1]}_tx_bias")) if weakest else None,
+    )
+
+
+def services(c: Client) -> list[Service]:
+    """Services in System → Diagnostics → Services. OPNsense lists only the
+    services that are enabled in its configuration, so each one is enabled."""
+    data = c.get("/api/core/service/search", params={"rowCount": -1})
+    out = []
+    for row in data.get("rows") or []:
+        name = row.get("id") or row.get("name")
+        if not name:
+            continue
+        out.append(
+            Service(
+                name=str(name),
+                description=row.get("description") or None,
+                running=flag(row.get("running")),
+                enabled=True,
+            )
+        )
+    return sorted(out, key=lambda s: s.name)
+
+
+def epoch(value: Any) -> str | None:
+    n = number(value)
+    if not n or n <= 0:
+        return None
+    return datetime.fromtimestamp(n, tz=timezone.utc).isoformat()
+
+
+def wireguard_peers(c: Client) -> list[VpnPeer]:
+    """Peers from `wg show all dump` (VPN → WireGuard → Status)."""
+    data = c.get("/api/wireguard/service/show", params={"rowCount": -1})
+    out = []
+    for r in data.get("rows") or []:
+        if r.get("type") != "peer":
+            continue
+        key = str(r.get("public-key") or "")
+        name = r.get("name") or f"{r.get('ifname') or r.get('if') or 'wg'} {key[:8]}".strip()
+        endpoint = r.get("endpoint")
+        out.append(
+            VpnPeer(
+                name=name,
+                protocol="wireguard",
+                endpoint=endpoint if endpoint and endpoint != "(none)" else None,
+                address=r.get("allowed-ips") or None,
+                # OPNsense calls a peer online after a handshake in the last 5 minutes.
+                connected=r.get("peer-status") == "online",
+                last_handshake=epoch(r.get("latest-handshake")),
+                rx_bytes=counter(r.get("transfer-rx")),
+                tx_bytes=counter(r.get("transfer-tx")),
+            )
+        )
+    return out
+
+
+def openvpn_peers(c: Client) -> list[VpnPeer]:
+    """Clients connected to each OpenVPN server and the firewall's own OpenVPN
+    clients (VPN → OpenVPN → Connection Status)."""
+    data = c.get(
+        "/api/openvpn/service/search_sessions",
+        "/api/openvpn/service/searchSessions",
+        params={"rowCount": -1},
+    )
+    out = []
+    for r in data.get("rows") or []:
+        connected_client = bool(r.get("is_client"))
+        if r.get("type") == "server" and not connected_client and r.get("status") != "connected":
+            continue  # a server waiting for clients is not a peer (p2p ones are)
+        name = r.get("common_name") if connected_client else None
+        name = name or r.get("description") or f"OpenVPN {r.get('id')}"
+        endpoint = r.get("real_address") or None
+        up = connected_client or r.get("status") == "connected"
+        out.append(
+            VpnPeer(
+                name=str(name),
+                protocol="openvpn",
+                endpoint=endpoint,
+                address=r.get("virtual_address") or None,
+                connected=up,
+                rx_bytes=counter(r.get("bytes_received")) if up else None,
+                tx_bytes=counter(r.get("bytes_sent")) if up else None,
+            )
+        )
+    return out
+
+
+def ipsec_peers(c: Client) -> list[VpnPeer]:
+    """IPsec tunnels (phase 1), with the traffic of their child SAs."""
+    data = c.get(
+        "/api/ipsec/sessions/search_phase1",
+        "/api/ipsec/sessions/searchPhase1",
+        params={"rowCount": -1},
+    )
+    out = []
+    for r in data.get("rows") or []:
+        name = r.get("phase1desc") or r.get("name")
+        if not name:
+            continue
+        remote = str(r.get("remote-addrs") or "")
+        up = bool(r.get("connected"))
+        out.append(
+            VpnPeer(
+                name=str(name),
+                protocol="ipsec",
+                endpoint=remote if remote and remote not in ("%any", "0.0.0.0", "::") else None,
+                connected=up,
+                rx_bytes=counter(r.get("bytes-in")) if up else None,
+                tx_bytes=counter(r.get("bytes-out")) if up else None,
+            )
+        )
+    return out
+
+
+def quiet(what: str, fn: Callable[[], T], default: T) -> T:
+    """Data only some firewalls have (a VPN, a DHCP server): its privilege is
+    only needed by those who use it, so a refusal is not a missing privilege."""
+    try:
+        return fn()
+    except Forbidden:
+        log.info("no privilege for %s", what)
+    except NotFound:
+        log.info("%s not available on this OPNsense", what)
+    except PluginError:
+        raise
+    except Exception:
+        log.exception("could not read %s", what)
+    return default
+
+
+def vpn_peers(c: Client) -> list[VpnPeer]:
+    """Every VPN in use; one nobody configured answers with no rows."""
+    return [
+        *quiet("the WireGuard status", lambda: wireguard_peers(c), []),
+        *quiet("the OpenVPN status", lambda: openvpn_peers(c), []),
+        *quiet("the IPsec status", lambda: ipsec_peers(c), []),
+    ]
+
+
+def firewall_states(c: Client) -> FirewallStates | None:
+    """Size of pf's state table (`pfctl -si`) and its hard limit (`pfctl -sm`)."""
+    info = c.get(
+        "/api/diagnostics/firewall/pf_statistics/info",
+        "/api/diagnostics/firewall/pfStatistics/info",
+    )
+    table = ((info or {}).get("info") or {}).get("state-table") or {}
+    current = counter((table.get("current-entries") or {}).get("total"))
+    limit = None
+    try:
+        memory = c.get(
+            "/api/diagnostics/firewall/pf_statistics/memory",
+            "/api/diagnostics/firewall/pfStatistics/memory",
+        )
+        limit = counter(((memory or {}).get("memory") or {}).get("states"))
+    except NotFound:
+        pass
+    if current is None and limit is None:
+        return None
+    return FirewallStates(current=current, limit=limit)
+
+
+Range = tuple[ipaddress.IPv4Address, ipaddress.IPv4Address]
+
+
+def ip_range(text: Any) -> Range | None:
+    """'192.168.1.100 - 192.168.1.199' or '192.168.1.128/26' (IPv4 only)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        if "-" in text:
+            a, b = (ipaddress.IPv4Address(p.strip()) for p in text.split("-", 1))
+        else:
+            net = ipaddress.IPv4Network(text.strip(), strict=False)
+            a, b = net.network_address, net.broadcast_address
+    except ValueError:
+        return None
+    return (a, b) if a <= b else None
+
+
+def kea_ranges(c: Client) -> dict[str, list[Range]]:
+    """Pools of each Kea subnet (Services → Kea DHCP → Kea DHCPv4 → Subnets)."""
+    data = c.get(
+        "/api/kea/dhcpv4/search_subnet", "/api/kea/dhcpv4/searchSubnet", params={"rowCount": -1}
+    )
+    out: dict[str, list[Range]] = {}
+    for row in data.get("rows") or []:
+        subnet = row.get("subnet")
+        if not subnet or ":" in str(subnet):
+            continue
+        pools = [ip_range(p) for p in re.split(r"[\n,]", str(row.get("pools") or ""))]
+        pools = [p for p in pools if p]
+        if pools:
+            out.setdefault(str(subnet), []).extend(pools)
+    return out
+
+
+def dnsmasq_ranges(c: Client, ifaces: list[Interface]) -> dict[str, list[Range]]:
+    """DHCP ranges of dnsmasq (Services → Dnsmasq DNS & DHCP → DHCP ranges),
+    named after the subnet of the interface that holds them."""
+    data = c.get(
+        "/api/dnsmasq/settings/search_range",
+        "/api/dnsmasq/settings/searchRange",
+        params={"rowCount": -1},
+    )
+    nets = [
+        ipaddress.ip_interface(ip).network
+        for i in ifaces
+        for ip in i.ips or []
+        if "." in ip and "/" in ip
+    ]
+    out: dict[str, list[Range]] = {}
+    for row in data.get("rows") or []:
+        start, end = row.get("start_addr"), row.get("end_addr")
+        if not start or not end:
+            continue  # an IPv6 constructor or a static-only range
+        r = ip_range(f"{start}-{end}")
+        if not r:
+            continue
+        net = next((n for n in nets if r[0] in n), None)
+        name = str(net) if net else (row.get("%interface") or row.get("interface") or None)
+        out.setdefault(name or f"{start}-{end}", []).append(r)
+    return out
+
+
+def dhcp_pools(c: Client, ifaces: list[Interface], active: list[DhcpLease]) -> list[DhcpPool]:
+    """Usage of each DHCP range: its addresses and the active leases in it.
+    ISC DHCP keeps its ranges outside the API, so only Kea and dnsmasq count."""
+    ranges: dict[str, list[Range]] = {}
+    for what, read in (
+        ("the Kea subnets", lambda: kea_ranges(c)),
+        ("the dnsmasq DHCP ranges", lambda: dnsmasq_ranges(c, ifaces)),
+    ):
+        for network, found in quiet(what, read, {}).items():
+            ranges.setdefault(network, []).extend(found)
+    leased = {ipaddress.IPv4Address(lease.ip) for lease in active}
+    out = []
+    for network, rs in ranges.items():
+        total = sum(int(b) - int(a) + 1 for a, b in rs)
+        used = sum(1 for ip in leased if any(a <= ip <= b for a, b in rs))
+        out.append(DhcpPool(network=network, total=total, used=used))
+    return sorted(out, key=lambda p: p.network)
+
+
+def extras(
+    c: Client,
+    ifaces: list[Interface],
+    vlan_cfg: dict[str, dict[str, Any]],
+    dhcp: list[DhcpLease],
+    missing: list[str],
+) -> dict[str, Any]:
+    """VLANs, services, VPN peers, DHCP pool usage and the state table."""
+    return {
+        "vlans": vlans(ifaces, vlan_cfg) or None,
+        "services": optional("services", missing, lambda: services(c), []) or None,
+        "vpn_peers": vpn_peers(c) or None,
+        "dhcp_pools": dhcp_pools(c, ifaces, dhcp) or None,
+        "firewall_states": optional("states", missing, lambda: firewall_states(c), None),
+    }
+
+
 # --- plugin entry points -------------------------------------------------------
 
 
@@ -621,7 +1045,10 @@ def collect(cfg: Config) -> list[Device]:
     try:
         info = system_information(c)
         missing: list[str] = []
-        ifaces, _logical, via = optional("interfaces", missing, lambda: interfaces(c), ([], {}, {}))
+        vlan_cfg = optional("vlans", missing, lambda: vlan_config(c), {}) if EXTRAS else {}
+        ifaces, _logical, via = optional(
+            "interfaces", missing, lambda: interfaces(c, vlan_cfg), ([], {}, {})
+        )
         optional("traffic", missing, lambda: traffic(c, ifaces), None)
         versions = info.get("versions") or []
         os_version = versions[0].rsplit("-", 1)[0] if versions else None
@@ -630,6 +1057,7 @@ def collect(cfg: Config) -> list[Device]:
         ips = sorted({ip.split("/")[0] for i in ifaces for ip in (i.ips or []) if "." in ip})
         host = urlparse(c.base).hostname or c.base
         clock = optional("system", missing, lambda: system_time(c), {})
+        dhcp = leases(c, missing)
         device = Device(
             key=lan_mac or (macs[0] if macs else host),
             name=info.get("name") or host,
@@ -644,9 +1072,10 @@ def collect(cfg: Config) -> list[Device]:
             ips=ips or None,
             interfaces=ifaces or None,
             arp=optional("arp", missing, lambda: arp(c), []) or None,
-            dhcp_leases=leases(c, missing) or None,
+            dhcp_leases=dhcp or None,
             gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
             **(health(c, clock, missing) if HEALTH else {}),
+            **(extras(c, ifaces, vlan_cfg, dhcp, missing) if EXTRAS else {}),
         )
         if missing:
             log.warning("missing privileges: %s", ", ".join(sorted(set(missing))))
@@ -664,6 +1093,10 @@ def test(cfg: Config) -> str:
         optional("arp", missing, lambda: arp(c), None)
         leases(c, missing)
         optional("gateways", missing, lambda: gateways(c), None)
+        if EXTRAS:
+            optional("vlans", missing, lambda: vlan_config(c), None)
+            optional("services", missing, lambda: services(c), None)
+            optional("states", missing, lambda: firewall_states(c), None)
         versions = info.get("versions") or []
         version = versions[0].rsplit("-", 1)[0] if versions else "OPNsense"
         msg = f"Connected to {info.get('name') or c.base} ({version})"

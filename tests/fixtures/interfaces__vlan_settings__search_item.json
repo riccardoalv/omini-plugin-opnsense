@@ -1,0 +1,4 @@
+{"rows":[
+ {"uuid":"8f6a2b1c-3d4e-4f50-9a6b-7c8d9e0f1a2b","if":"vtnet0 (00:0d:b9:aa:bb:cc)","tag":"20","pcp":"0","proto":"","descr":"IoT devices","vlanif":"vtnet0_vlan20 [IOT]"},
+ {"uuid":"1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d","if":"igb1 (00:0d:b9:aa:bb:cc) [LAN]","tag":"30","pcp":"0","proto":"802.1q","descr":"Guests","vlanif":"vlan01"}
+],"rowCount":2,"total":2,"current":1}

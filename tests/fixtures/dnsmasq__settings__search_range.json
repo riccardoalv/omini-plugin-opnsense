@@ -1,0 +1,4 @@
+{"rows":[
+ {"uuid":"5b1f0c2a-6d3e-4f7a-8b9c-0d1e2f3a4b5c","interface":"lan","%interface":"LAN","set_tag":"","start_addr":"192.168.1.100","end_addr":"192.168.1.199","subnet_mask":"","constructor":"","mode":"","prefix_len":"","lease_time":"","domain_type":"range","domain":"","nosync":"0","ra_mode":"","ra_priority":"","ra_mtu":"","ra_interval":"","ra_router_lifetime":"","description":"LAN clients"},
+ {"uuid":"6c2a1d3b-7e4f-4a8b-9c0d-1e2f3a4b5c6d","interface":"lan","%interface":"LAN","set_tag":"","start_addr":"::1000","end_addr":"","subnet_mask":"","constructor":"lan","mode":"slaac","prefix_len":"64","lease_time":"","domain_type":"range","domain":"","nosync":"0","ra_mode":"","ra_priority":"","ra_mtu":"","ra_interval":"","ra_router_lifetime":"","description":""}
+],"rowCount":2,"total":2,"current":1}

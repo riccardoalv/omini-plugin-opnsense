@@ -1,13 +1,15 @@
 id: opnsense
 name: OPNsense
-version: 0.2.1
+version: 0.3.0
 protocol: 1
 entrypoint: main.py
 timeout_s: 60
 description: >-
   OPNsense firewall through its official REST API: interfaces with link speed
-  and traffic, ARP, DHCP leases (ISC, Kea or dnsmasq), CPU, memory, swap, load, disks, temperatures, uptime, pending updates and
-  gateway status. Read-only.
+  and traffic, VLANs, SFP modules, ARP, DHCP leases and pool usage, gateway
+  status, VPN peers (WireGuard, OpenVPN, IPsec), services, firewall states,
+  CPU, memory, swap, load, disks, temperatures, uptime and pending updates.
+  Read-only.
 author: Omini
 homepage: https://github.com/riccardoalv/omini-plugin-opnsense
 fields:

@@ -1,0 +1,5 @@
+{"total":3,"rowCount":3,"current":1,"rows":[
+ {"id":"configd","locked":1,"running":1,"description":"System Configuration Daemon","name":"configd"},
+ {"id":"openvpn/1","locked":0,"running":0,"description":"OpenVPN server: Road warriors","name":"openvpn"},
+ {"id":"unbound","locked":0,"running":1,"description":"Unbound DNS","name":"unbound"}
+]}

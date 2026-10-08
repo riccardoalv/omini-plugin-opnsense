@@ -1,0 +1,4 @@
+{"total":2,"rowCount":2,"current":1,"rows":[
+ {"local-addrs":"203.0.113.10","remote-addrs":"203.0.113.99","children":"","local-id":"203.0.113.10","remote-id":"203.0.113.99","version":"IKEv2","routed":true,"local-class":"pre-shared key","remote-class":"pre-shared key","ikeid":"0f3c6b0e-4a1d-4c2e-9b7a-2d5e8f1a3c4b","phase1desc":"Branch office","name":"0f3c6b0e-4a1d-4c2e-9b7a-2d5e8f1a3c4b","connected":true,"install-time":120,"bytes-in":7777,"bytes-out":8888,"packets-in":70,"packets-out":80},
+ {"local-addrs":"203.0.113.10","remote-addrs":"%any","children":"","local-id":"","remote-id":"","version":"IKEv2","routed":true,"local-class":"","remote-class":"","ikeid":"2","phase1desc":null,"name":"con2","connected":false,"install-time":null,"bytes-in":0,"bytes-out":0,"packets-in":0,"packets-out":0}
+]}
