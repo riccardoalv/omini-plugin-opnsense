@@ -177,3 +177,89 @@ def test_connector_of_a_port_that_is_down(opnsense, cfg):
         ("ix1", "rj45"),
         ("igb2", None),
     ]
+
+
+def test_pppoe_carrier_is_the_unassigned_port():
+    """PPPoE straight on a port (no VLAN): the port up with no role of its own,
+    not the other WAN's port, nor a link aggregation's member."""
+    from omini_opnsense.collect import carrier
+
+    rows = [
+        {
+            "device": "igc0",
+            "status": "up",
+            "description": "Unassigned Interface",
+            "is_physical": True,
+        },
+        {
+            "device": "igc1",
+            "identifier": "opt1",
+            "description": "WAN_LTE",
+            "status": "up",
+            "is_physical": True,
+        },
+        {"device": "ax0", "status": "up", "is_physical": True},
+        {
+            "device": "lagg0",
+            "identifier": "lan",
+            "status": "up",
+            "laggport": {"ax0": {}, "ax1": {}},
+        },
+        {"device": "ax1", "status": "up", "is_physical": True},
+        {"device": "pppoe0", "identifier": "wan", "description": "WAN_FIBER", "status": "up"},
+    ]
+    assert carrier(rows) == "igc0"
+
+
+def test_lagg_members():
+    from omini_opnsense.collect import members_of
+
+    assert members_of({"laggport": {"ax1": {}, "ax0": {}}}, "lag") == {"members": ["ax0", "ax1"]}
+    assert members_of({"laggport": {"ax0": {}}}, "ethernet") == {}
+
+
+def test_a_gateway_that_is_down_has_no_delay(opnsense, cfg):
+    from omini_opnsense.collect import gateways
+
+    class Fake:
+        def get(self, *paths):
+            return {
+                "items": [
+                    {
+                        "name": "FIBER",
+                        "address": "203.0.113.1",
+                        "status": "down",
+                        "delay": "~",
+                        "loss": "~",
+                    },
+                    {
+                        "name": "PENDING",
+                        "address": "~",
+                        "status": "none",
+                        "delay": "~",
+                        "loss": "~",
+                    },
+                    {
+                        "name": "LTE",
+                        "address": "192.168.8.1",
+                        "status": "none",
+                        "delay": "21.3 ms",
+                        "loss": "0.0 %",
+                    },
+                ]
+            }
+
+    got = {g.name: g.status for g in gateways(Fake())}
+    assert got == {"FIBER": "down", "PENDING": "unknown", "LTE": "up"}
+
+
+def test_a_dial_up_gateway_that_is_down_keeps_its_interface():
+    """PPPoE down: no address, no gateway list on the interface; the gateway
+    is still tied to it by its name (WAN_FIBER_PPPOE → the WAN_FIBER port)."""
+    from omini_opnsense.collect import gateway_interface
+
+    via = {"descr:WAN_FIBER": "pppoe0", "descr:WAN_LTE": "igc1", "192.168.8.1": "igc1"}
+    down = {"name": "WAN_FIBER_PPPOE", "address": "~", "monitor": "~", "status": "down"}
+    assert gateway_interface(down, via) == "pppoe0"
+    assert gateway_interface({"name": "LTE", "address": "192.168.8.1"}, via) == "igc1"
+    assert gateway_interface({"name": "OTHER_GW_2", "address": "~"}, via) is None

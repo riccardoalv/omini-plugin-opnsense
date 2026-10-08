@@ -229,6 +229,9 @@ def interfaces(
         device = row["device"]
         if row.get("identifier"):
             logical[row["identifier"]] = device
+            # Dynamic gateways are named after the interface: WAN_PPPOE, WAN_DHCP.
+            if row.get("description"):
+                via["descr:" + str(row["description"]).upper()] = device
         for address in row.get("gateways") or []:
             via[str(address)] = device
         stats = row.get("statistics") or {}
@@ -289,10 +292,16 @@ def interfaces(
 
 
 def members_of(row: dict[str, Any], kind: str) -> dict[str, Any]:
-    """A bridge's ports (``members``, in the SDK of Omini 0.2.1 and later)."""
-    if kind != "bridge" or "members" not in Interface.model_fields:
+    """A bridge's or a link aggregation's ports (``members``, in the SDK of
+    Omini 0.2.1 and later)."""
+    if "members" not in Interface.model_fields:
         return {}
-    names = sorted(row.get("members") or {})
+    if kind == "bridge":
+        names = sorted(row.get("members") or {})
+    elif kind == "lag":
+        names = sorted(row.get("laggport") or {})
+    else:
+        return {}
     return {"members": names} if names else {}
 
 
@@ -314,14 +323,27 @@ def is_wan(row: dict[str, Any]) -> bool:
 
 def carrier(rows: list[dict[str, Any]]) -> str | None:
     """The port a PPPoE/PPP WAN runs on. OPNsense does not expose it in this
-    API; the usual setup is a VLAN with no role assigned (e.g. vlan0.2000 for
-    an ISP that tags PPPoE), else a port whose description says WAN."""
-    vlans = [r for r in rows if r.get("vlan") and not r.get("identifier")]
+    API; the port carries no role of its own (it is not assigned): a VLAN
+    (e.g. vlan0.2000 for an ISP that tags PPPoE), else the one physical port
+    that is up, unassigned and not part of a link aggregation, else an
+    unassigned port whose description says WAN."""
+    unassigned = [r for r in rows if not r.get("identifier")]
+    vlans = [r for r in unassigned if r.get("vlan")]
     if len(vlans) == 1:
         return vlans[0]["device"]
+    in_lagg = {m for r in rows for m in (r.get("laggport") or {})}
+    ports = [
+        r["device"]
+        for r in unassigned
+        if interface_type(r["device"], r) == "ethernet"
+        and r.get("status") == "up"
+        and r["device"] not in in_lagg
+    ]
+    if len(ports) == 1:
+        return ports[0]
     named = [
         r["device"]
-        for r in rows
+        for r in unassigned
         if "wan" in str(r.get("description", "")).lower()
         and interface_type(r["device"], r) == "ethernet"
     ]
@@ -430,6 +452,37 @@ GATEWAY_STATUS = {
 }
 
 
+# Suffixes OPNsense gives the gateways it creates for an interface.
+GATEWAY_PROTOCOLS = (
+    "DHCP",
+    "DHCP6",
+    "PPPOE",
+    "PPP",
+    "PPTP",
+    "L2TP",
+    "SLAAC",
+    "TRACK6",
+    "6RD",
+    "6TO4",
+    "GW",
+    "GWV6",
+)
+
+
+def gateway_interface(g: dict[str, Any], via: dict[str, str]) -> str | None:
+    """The interface a gateway is on: by its address or monitor IP (in the
+    interfaces' gateway lists), else by its name — a dynamic gateway is named
+    after its interface (WAN_PPPOE), which keeps it tied to a dial-up link
+    that is down and has no address."""
+    for key in (g.get("address"), g.get("monitor")):
+        if key and key != "~" and via.get(str(key)):
+            return via[str(key)]
+    base, _, proto = str(g.get("name") or "").upper().rpartition("_")
+    if base and proto in GATEWAY_PROTOCOLS:
+        return via.get("descr:" + base)
+    return None
+
+
 def gateways(c: Client, via: dict[str, str] | None = None) -> list[Gateway]:
     """via: gateway address → interface (from the interfaces' gateway lists)."""
     data = c.get("/api/routes/gateway/status")
@@ -438,13 +491,18 @@ def gateways(c: Client, via: dict[str, str] | None = None) -> list[Gateway]:
         if not g.get("name"):
             continue
         no_data = g.get("delay") == "~"
-        status = "unknown" if no_data else GATEWAY_STATUS.get(g.get("status", ""), "unknown")
+        status = GATEWAY_STATUS.get(g.get("status", ""), "unknown")
+        if no_data and status != "down":
+            # Not measured yet ("Pending"); a gateway that is down has no
+            # delay to measure, and is down all the same.
+            status = "unknown"
+
         address = g.get("address")
         out.append(
             Gateway(
                 name=g["name"],
                 address=address if address and address != "~" else None,
-                interface=(via or {}).get(address or "") or (via or {}).get(g.get("monitor") or ""),
+                interface=gateway_interface(g, via or {}),
                 status=status,
                 rtt_ms=None if no_data else number(g.get("delay")),
                 loss_pct=None if no_data else number(g.get("loss")),

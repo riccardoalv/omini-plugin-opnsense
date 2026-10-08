@@ -1,6 +1,6 @@
 id: opnsense
 name: OPNsense
-version: 0.3.0
+version: 0.3.1
 protocol: 1
 entrypoint: main.py
 timeout_s: 60
