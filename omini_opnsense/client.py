@@ -71,6 +71,24 @@ class Client:
             raise PluginError(f"OPNsense could not apply {path}")
         return out
 
+    def get_text(self, path: str) -> str:
+        """GETs a file the API answers as is (not JSON), e.g. config.xml."""
+        try:
+            r = self.http.get(path, headers={"Accept": "*/*"})
+        except httpx.TimeoutException as e:
+            raise PluginError(f"{self.base} did not answer in time") from e
+        except httpx.HTTPError as e:
+            raise PluginError(f"request to {self.base} failed: {e}") from e
+        if r.status_code == 401:
+            raise PluginError("OPNsense rejected the API key or secret")
+        if r.status_code == 403:
+            raise Forbidden(path)
+        if r.status_code == 404:
+            raise NotFound(path)
+        if r.status_code >= 400:
+            raise PluginError(f"OPNsense answered {r.status_code} for {path}")
+        return r.text
+
     def _get(self, path: str, params: dict[str, Any] | None) -> Any:
         return self._send("GET", path, params, None)
 

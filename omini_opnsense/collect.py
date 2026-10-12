@@ -36,6 +36,13 @@ try:  # services, VPN peers, VLANs, DHCP pools, firewall states: Omini 0.3 and l
 except ImportError:
     EXTRAS = False
 
+try:  # backups: Omini 1.3 and later
+    from omini_sdk import ConfigBackup
+except ImportError:
+    ConfigBackup = None
+
+from omini_opnsense import backup as backups
+from omini_opnsense import dns, pause
 from omini_opnsense import networks as nets
 from omini_opnsense.client import Client, Forbidden, NotFound
 
@@ -62,6 +69,10 @@ PRIVILEGES = {
         "Firewall: Rules, Firewall: Alias"
     ),
     "states": "Diagnostics: Firewall statistics",
+    "lagg": "Interfaces: LAGG",
+    "dns": "Services: Unbound DNS: Edit Host and Domain Override (or Services: Dnsmasq DNS/DHCP)",
+    "pause": "Firewall: Alias, Firewall: Rules, Interfaces: Assignments",
+    "wol": "Services: Wake on LAN",
 }
 
 
@@ -1083,6 +1094,45 @@ def dhcp_pools(c: Client, ifaces: list[Interface], active: list[DhcpLease]) -> l
     return sorted(out, key=lambda p: p.network)
 
 
+def lagg_config(c: Client) -> dict[str, list[str]]:
+    """Link aggregations of Interfaces → Devices → LAGG: lagg0 → its member ports
+    (also those that are down, which the interface overview leaves out)."""
+    data = c.get(
+        "/api/interfaces/lagg_settings/search_item",
+        "/api/interfaces/lagg_settings/searchItem",
+        params={"rowCount": -1},
+    )
+    out: dict[str, list[str]] = {}
+    for row in data.get("rows") or []:
+        lagg = first_word(row.get("laggif"))
+        members = [first_word(m) for m in re.split(r"[,\n]", text_of(row.get("members")))]
+        if lagg:
+            out[lagg] = sorted({m for m in members if m})
+    return out
+
+
+def text_of(value: Any) -> str:
+    """A plain field, or a select ({"igb0": {"selected": 1}}) as its selected keys."""
+    if isinstance(value, dict):
+        return ",".join(k for k, v in value.items() if isinstance(v, dict) and v.get("selected"))
+    return "" if value is None else str(value)
+
+
+def mark_lags(ifaces: list[Interface], config: dict[str, list[str]]) -> None:
+    """Each member port names its link aggregation (Interface.lag)."""
+    if "lag" not in Interface.model_fields:
+        return
+    for i in ifaces:
+        if i.type != "lag":
+            continue
+        members = sorted(set(getattr(i, "members", None) or []) | set(config.get(i.name) or []))
+        if members and "members" in Interface.model_fields:
+            i.members = members
+        for m in ifaces:
+            if m.name in members:
+                m.lag = i.name
+
+
 def wan_devices(ifaces: list[Interface]) -> set[str]:
     """The WANs and what they ride on (pppoe1 → vlan0.2000 → re0)."""
     by_name = {i.name: i for i in ifaces}
@@ -1114,17 +1164,31 @@ def router_networks(c: Client, ifaces: list[Interface], missing: list[str]) -> d
     )
 
 
+def homelab(c: Client, system_name: str) -> dict[str, Any]:
+    """Local DNS names, the local domain and the paused devices. Their
+    privileges are only needed by those who use them, so a refusal is quiet."""
+    domain = dns.domain_of(system_name, c)
+    return newer_fields(
+        Device,
+        dns_domain=domain,
+        dns_records=quiet("the local DNS names", lambda: dns.records(c, domain), []) or None,
+        paused=quiet("the paused devices", lambda: pause.paused(c), []) or None,
+    )
+
+
 def extras(
     c: Client,
     ifaces: list[Interface],
     vlan_cfg: dict[str, dict[str, Any]],
     dhcp: list[DhcpLease],
     missing: list[str],
+    system_name: str = "",
 ) -> dict[str, Any]:
     """VLANs, services, VPN peers, DHCP pool usage and the state table."""
     return {
         "vlans": vlans(ifaces, vlan_cfg) or None,
         **router_networks(c, ifaces, missing),
+        **homelab(c, system_name),
         "services": optional("services", missing, lambda: services(c), []) or None,
         "vpn_peers": vpn_peers(c) or None,
         "dhcp_pools": dhcp_pools(c, ifaces, dhcp) or None,
@@ -1133,6 +1197,13 @@ def extras(
 
 
 # --- plugin entry points -------------------------------------------------------
+
+
+def device_key(ifaces: list[Interface], host: str) -> str:
+    """The LAN's MAC, else the first MAC, else the address Omini uses."""
+    macs = sorted({i.mac for i in ifaces if i.mac})
+    lan_mac = next((i.mac for i in ifaces if i.mac and i.description == "LAN"), None)
+    return lan_mac or (macs[0] if macs else host)
 
 
 def collect(cfg: Config) -> list[Device]:
@@ -1144,18 +1215,19 @@ def collect(cfg: Config) -> list[Device]:
         ifaces, _logical, via = optional(
             "interfaces", missing, lambda: interfaces(c, vlan_cfg), ([], {}, {})
         )
+        mark_lags(ifaces, quiet("the link aggregations", lambda: lagg_config(c), {}))
         optional("traffic", missing, lambda: traffic(c, ifaces), None)
         versions = info.get("versions") or []
         os_version = versions[0].rsplit("-", 1)[0] if versions else None
         macs = sorted({i.mac for i in ifaces if i.mac})
-        lan_mac = next((i.mac for i in ifaces if i.mac and i.description == "LAN"), None)
         ips = sorted({ip.split("/")[0] for i in ifaces for ip in (i.ips or []) if "." in ip})
         host = urlparse(c.base).hostname or c.base
         clock = optional("system", missing, lambda: system_time(c), {})
         dhcp = leases(c, missing)
+        name = str(info.get("name") or "")
         device = Device(
-            key=lan_mac or (macs[0] if macs else host),
-            name=info.get("name") or host,
+            key=device_key(ifaces, host),
+            name=name or host,
             host=host,
             role="firewall",
             vendor="OPNsense",
@@ -1170,7 +1242,7 @@ def collect(cfg: Config) -> list[Device]:
             dhcp_leases=dhcp or None,
             gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
             **(health(c, clock, missing) if HEALTH else {}),
-            **(extras(c, ifaces, vlan_cfg, dhcp, missing) if EXTRAS else {}),
+            **(extras(c, ifaces, vlan_cfg, dhcp, missing, name) if EXTRAS else {}),
         )
         if missing:
             log.warning("missing privileges: %s", ", ".join(sorted(set(missing))))
@@ -1179,67 +1251,164 @@ def collect(cfg: Config) -> list[Device]:
         c.close()
 
 
+CHANGES = {
+    "network.set": "networks",
+    "network.delete": "networks",
+    "reservation.set": "networks",
+    "reservation.delete": "networks",
+    "dns.set": "dns",
+    "dns.delete": "dns",
+    "wol.send": "wol",
+    "pause.set": "pause",
+    "pause.delete": "pause",
+}
+
+
 def apply(cfg: Config, change: Any) -> list[Device]:
     """network.set: a VLAN's network (its VLAN on the port toward the switches,
     the interface and gateway, the DHCP range, the access rules); network.delete
-    removes it. OPNsense saves what the API changes; the plugin reads the
-    router again until it serves the network as asked."""
-    if change.kind not in (
-        "network.set",
-        "network.delete",
-        "reservation.set",
-        "reservation.delete",
-    ):
+    removes it; reservation.*: fixed addresses; dns.*: local names; wol.send:
+    a Wake-on-LAN packet; pause.*: a device's internet. OPNsense saves what the
+    API changes; the plugin reads the router again until it is as asked."""
+    if change.kind not in CHANGES:
         raise PluginError(f"this plugin cannot apply {change.kind}")
     value = change.value if isinstance(change.value, dict) else dict(change.value)
     c = client_from(cfg)
     try:
-        ifaces, _, _ = interfaces(c, vlan_config(c))
-        wan = wan_devices(ifaces)
-        st = nets.read_state(c, wan)
-        if st is None:
-            raise PluginError(
-                "changing networks needs OPNsense 26.7 or later and the privileges "
-                + PRIVILEGES["networks"]
-            )
-        if change.kind == "reservation.set":
-            nets.reserve(c, st, value)
-            nets.wait_for(
-                lambda: any(
-                    r["mac"] == nets.norm_mac(value["mac"]) and r["ip"] == value["ip"]
-                    for r in nets.reservations(c, nets.read_state(c, wan) or nets.State())
-                ),
-                "the reservation",
-            )
-        elif change.kind == "reservation.delete":
-            nets.unreserve(c, st, value["mac"])
-            nets.wait_for(
-                lambda: (
-                    not any(
-                        r["mac"] == nets.norm_mac(value["mac"])
-                        for r in nets.reservations(c, nets.read_state(c, wan) or nets.State())
-                    )
-                ),
-                "the removal of the reservation",
-            )
-        elif change.kind == "network.set":
-            nets.apply_set(c, st, value, bridges_of(ifaces))
-            nets.wait_for(lambda: nets.matches(nets.read_state(c, wan), value), "the network")
+        if change.kind in ("dns.set", "dns.delete"):
+            apply_dns(c, change.kind, value)
+        elif change.kind == "wol.send":
+            wake(c, value)
         else:
-            vid = int(value["vlan"])
-            nets.apply_delete(c, st, vid)
-            nets.wait_for(
-                lambda: (
-                    not any(
-                        n["vlan"] == vid
-                        for n in nets.networks(nets.read_state(c, wan) or nets.State())
-                    )
-                ),
-                "the removal",
-            )
+            apply_router(c, change.kind, value)
+    except Forbidden as e:
+        raise PluginError(
+            f"the API user may not use {e}: give it the privilege "
+            + PRIVILEGES[CHANGES[change.kind]]
+        ) from e
     finally:
         c.close()
     return collect(cfg)
+
+
+def apply_dns(c: Client, kind: str, value: dict[str, Any]) -> None:
+    domain = dns.domain_of(str(system_information(c).get("name") or ""), c)
+    if kind == "dns.set":
+        fqdn = dns.set_name(c, value, domain)
+        nets.wait_for(
+            lambda: {"name": fqdn, "ip": str(value["ip"])} in dns.records(c, domain),
+            f"the name {fqdn}",
+        )
+        return
+    fqdn = dns.delete_name(c, str(value.get("name") or ""), domain)
+    nets.wait_for(
+        lambda: not any(r["name"] == fqdn for r in dns.records(c, domain)),
+        f"the removal of {fqdn}",
+    )
+
+
+def wol_interface(ifaces: list[Interface], logical: dict[str, str], ip: str) -> str:
+    """The interface (lan, opt3) whose network holds ip; the LAN without one."""
+    ident = {device: name for name, device in logical.items()}
+    if not ip:
+        if "lan" in logical:
+            return "lan"
+        raise PluginError("the firewall has no LAN to wake the device on")
+    addr = ipaddress.IPv4Address(ip)
+    for i in ifaces:
+        for a in i.ips or []:
+            if "/" not in a or ":" in a or i.name not in ident:
+                continue
+            if addr in ipaddress.ip_interface(a).network:
+                return ident[i.name]
+    raise PluginError(f"no network of the firewall holds {ip}")
+
+
+def wake(c: Client, value: dict[str, Any]) -> None:
+    """Wake-on-LAN through the os-wol plugin."""
+    target = nets.norm_mac(value.get("mac"))
+    if not target:
+        raise PluginError("a MAC address is needed to wake a device")
+    ifaces, logical, _ = interfaces(c)
+    ifname = wol_interface(ifaces, logical, str(value.get("ip") or ""))
+    try:
+        c.post("/api/wol/wol/set", {"wake": {"interface": ifname, "mac": target}})
+    except NotFound as e:
+        raise PluginError(
+            "Wake-on-LAN through OPNsense needs the os-wol plugin: "
+            "install it in System → Firmware → Plugins"
+        ) from e
+
+
+def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
+    """Networks, fixed addresses and pauses: they need the interface assignments."""
+    ifaces, _, _ = interfaces(c, vlan_config(c))
+    wan = wan_devices(ifaces)
+    st = nets.read_state(c, wan)
+    if st is None:
+        raise PluginError(
+            "this change needs OPNsense 26.7 or later and the privileges " + PRIVILEGES["networks"]
+        )
+    if kind == "reservation.set":
+        nets.reserve(c, st, value)
+        nets.wait_for(
+            lambda: any(
+                r["mac"] == nets.norm_mac(value["mac"]) and r["ip"] == value["ip"]
+                for r in nets.reservations(c, nets.read_state(c, wan) or nets.State())
+            ),
+            "the reservation",
+        )
+    elif kind == "reservation.delete":
+        nets.unreserve(c, st, value["mac"])
+        nets.wait_for(
+            lambda: (
+                not any(
+                    r["mac"] == nets.norm_mac(value["mac"])
+                    for r in nets.reservations(c, nets.read_state(c, wan) or nets.State())
+                )
+            ),
+            "the removal of the reservation",
+        )
+    elif kind == "pause.set":
+        ips = pause.set_pause(c, st, value)
+        mac = nets.norm_mac(value["mac"])
+        nets.wait_for(
+            lambda: pause.is_paused(c, nets.read_state(c, wan) or nets.State(), mac, ips),
+            "the pause",
+        )
+    elif kind == "pause.delete":
+        mac = nets.norm_mac(value.get("mac"))
+        pause.delete_pause(c, st, mac)
+        nets.wait_for(
+            lambda: not any(p["mac"] == mac for p in pause.paused(c)),
+            "the end of the pause",
+        )
+    elif kind == "network.set":
+        nets.apply_set(c, st, value, bridges_of(ifaces))
+        nets.wait_for(lambda: nets.matches(nets.read_state(c, wan), value), "the network")
+    else:
+        vid = int(value["vlan"])
+        nets.apply_delete(c, st, vid)
+        nets.wait_for(
+            lambda: (
+                not any(
+                    n["vlan"] == vid for n in nets.networks(nets.read_state(c, wan) or nets.State())
+                )
+            ),
+            "the removal",
+        )
+
+
+def backup(cfg: Config) -> list[ConfigBackup]:
+    """config.xml, without the revision stamp of the last save."""
+    c = client_from(cfg)
+    try:
+        content = backups.config_xml(c)
+        host = urlparse(c.base).hostname or c.base
+        ifaces = quiet("the interfaces", lambda: interfaces(c)[0], [])
+        return [ConfigBackup(device=device_key(ifaces, host), format="xml", content=content)]
+    finally:
+        c.close()
 
 
 def test(cfg: Config) -> str:

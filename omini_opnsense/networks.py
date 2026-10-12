@@ -27,6 +27,8 @@ MDNS = "/api/mdnsrepeater"  # the os-mdns-repeater plugin
 # The private ranges, an alias the "Internet only" rules block.
 PRIVATE_ALIAS = "omini_private"
 PRIVATE_RANGES = "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16"
+# The paused devices' addresses (see pause.py); its rule is no network's access.
+PAUSED_ALIAS = "omini_paused"
 # Rules Omini writes start with this, so a person reading them knows.
 RULE_PREFIX = "Omini: "
 
@@ -151,11 +153,13 @@ def dhcp_of(st: State, a: Assigned) -> dict[str, Any] | None:
 
 
 def rules_on(st: State, ifname: str) -> list[dict[str, Any]]:
+    """The interface's rules, but the pause rule (it belongs to no network's access)."""
     return [
         r
         for r in st.rules
         if ifname in text(r.get("interface")).lower().split(",")
         and text(r.get("enabled")) not in ("0", "false")
+        and text(r.get("source_net")) != PAUSED_ALIAS
     ]
 
 
@@ -459,6 +463,9 @@ def apply_delete(c: Client, st: State, vid: int) -> None:
     if n is None:
         raise PluginError(f"the router serves no network on VLAN {vid}")
     ifname, device = n["interface"], n["device"]
+    for r in st.rules:  # its pause rule, if a device is paused
+        if text(r.get("source_net")) == PAUSED_ALIAS and text(r.get("interface")) == ifname:
+            c.post(f"{RULES}/del_rule/{r['uuid']}")
     drop_rules(c, st, ifname)
     set_mdns(c, st, ifname, False)
     set_dhcp(c, st, ifname, n["gateway"], {"enabled": False}, "")
