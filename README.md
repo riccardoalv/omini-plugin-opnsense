@@ -21,7 +21,7 @@
 | Networks (26.7+): each VLAN's interface, gateway, DHCP range and access rules; the LAN is VLAN 1 | The VLANs tab: a VLAN as a whole network |
 | Link aggregations (LAGG): each member port and its `lagg` (members that are down too) | LAGs on the map |
 | Local DNS names: Unbound host overrides (A records), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
-| Paused devices (the `omini_paused_mac` alias) | The pause mark on the map |
+| Paused devices (the `omini_paused_mac` alias, and simple block rules set by hand) | The pause mark on the map |
 | The configuration, `config.xml` (on demand, not every round) | The device's configuration history and its differences |
 
 ## What it changes
@@ -47,6 +47,7 @@ Also, on any supported version:
 And on 26.7 or later:
 
 - **Pausing a device's internet** (`pause.set`, `pause.delete`), over IPv4 **and IPv6**: the device's MAC goes in a MAC-address alias `omini_paused_mac` (OPNsense resolves it to the device's IPv4 and IPv6 addresses from its ARP and NDP tables, so the changing IPv6 temporary/privacy addresses of SLAAC are covered too; its description keeps the IPv4 addresses and name Omini sent, e.g. `Omini paused: aa:bb:cc:dd:ee:ff 192.168.1.50 (TV)`). Each LAN-side interface gets one rule, first in its list (sequence 1), for IPv4+IPv6: block from `omini_paused_mac` to anything that is **not** `omini_local`, described "Omini: paused devices (no internet)". `omini_local` is a network alias with what the device still reaches: the private IPv4 ranges, IPv6 link-local (`fe80::/10`), ULA (`fc00::/7`) and multicast (`ff00::/8`), and the IPv6 networks of the LAN-side interfaces (e.g. the ISP's prefix on the LAN), refreshed at every pause. The firewall's own MACs are never paused. Its open IPv4 connections are cut (states killed), when the API user may. Resuming the last device removes the rules and both aliases. The pause rule is not part of a network's access (Internet only, Whole network…), and changing the access keeps it. A pause made by 0.5.0 or earlier (the IPv4 host alias `omini_paused` and its IPv4 rules) is moved to the MAC alias at the next pause or resume, and can be resumed as usual.
+- **Blocks set by hand** show as paused too: an enabled block or reject rule, inbound, from hosts (IP addresses, MACs, or a host or MAC alias of them, resolved to devices through the ARP and NDP tables) to anything, with no ports or schedule. Omini shows the rule's description as the reason. Resuming such a device turns the rule off (`POST /api/firewall/filter/toggle_rule/<uuid>/0`, then apply) when it blocks that device alone; a rule that blocks several devices is refused, to be changed in OPNsense. Other rules (with ports, networks, schedules) are left as they are.
 
 OPNsense saves every API change in its configuration; the plugin reads the firewall again until it serves the network as asked, and reports an error otherwise.
 

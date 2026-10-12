@@ -56,6 +56,7 @@ class Firewall(Router):
         self.wol = True
         self.woken = []
         self.killed = []
+        self.arp_rows = None
         self.saves = 0
         self.laggs = {}
 
@@ -68,6 +69,8 @@ class Firewall(Router):
             return 200, {"dnsmasq": dict(self.dnsmasq)}
         if path == "/api/dnsmasq/settings/search_host":
             return 200, self.search(self.hosts)
+        if path == "/api/diagnostics/interface/search_arp" and self.arp_rows is not None:
+            return 200, {"rows": self.arp_rows}
         if path == "/api/diagnostics/interface/get_ndp":
             return 200, [
                 {"mac": "AA:BB:CC:00:00:01", "ip": "2001:db8:1::50", "intf": "bridge0"},
@@ -110,6 +113,10 @@ class Firewall(Router):
             if any(r.get("source_net") == self.aliases[last]["name"] for r in self.rules.values()):
                 return 200, {"result": "failed", "validations": {"alias": "in use"}}
             del self.aliases[last]
+        elif path.startswith("/api/firewall/filter/toggle_rule/"):
+            uuid, enabled = path.split("/")[-2:]
+            self.rules[uuid]["enabled"] = enabled
+            return 200, {"result": "Disabled" if enabled == "0" else "Enabled", "changed": True}
         elif path == "/api/diagnostics/firewall/kill_states":
             self.killed.append(body["filter"])
             return 200, {"result": "ok", "dropped_states": 3}
@@ -484,3 +491,62 @@ def test_a_change_the_firewall_did_not_keep_fails(fw, cfg, monkeypatch):
     monkeypatch.setattr(fw, "post", ignore_overrides)
     with pytest.raises(PluginError, match=r"did not apply the name nas\.lan"):
         apply(cfg, "dns.set", {"name": "nas.lan", "ip": "192.168.1.20"})
+
+
+# --- blocks set by hand -------------------------------------------------------------
+
+
+def hand_block(fw, source, description):
+    uuid = fw.uuid()
+    fw.rules[uuid] = {
+        "enabled": "1",
+        "action": "block",
+        "interface": "lan",
+        "direction": "in",
+        "ipprotocol": "inet46",
+        "source_net": source,
+        "destination_net": "any",
+        "description": description,
+    }
+    return uuid
+
+
+def test_blocks_set_by_hand_show_as_paused_and_resume(fw, cfg):
+    fw.arp_rows = [
+        {"ip": "192.168.1.77", "mac": "aa:bb:cc:00:00:77", "intf": "bridge0"},
+        {"ip": "192.168.1.78", "mac": "aa:bb:cc:00:00:78", "intf": "bridge0"},
+        {"ip": "192.168.1.79", "mac": "aa:bb:cc:00:00:79", "intf": "bridge0"},
+    ]
+    fw.aliases[fw.uuid()] = {
+        "name": "kids",
+        "type": "host",
+        "content": "192.168.1.78\n192.168.1.79",
+    }
+    alone = hand_block(fw, "192.168.1.77", "Block the PC")
+    shared = hand_block(fw, "kids", "Kids at night")
+    # Not simple: a port, a network, a pass rule. They are no pauses.
+    fw.rules[fw.uuid()] = {**fw.rules[alone], "destination_port": "443", "description": "web only"}
+    fw.rules[fw.uuid()] = {
+        **fw.rules[alone],
+        "source_net": "192.168.1.0/24",
+        "description": "the LAN",
+    }
+    fw.rules[fw.uuid()] = {**fw.rules[alone], "action": "pass", "description": "allowed"}
+    [dev] = collect_module.collect(cfg)
+    assert {(p.mac, tuple(p.ips or []), p.rule) for p in dev.paused} == {
+        ("aa:bb:cc:00:00:77", ("192.168.1.77",), "Block the PC"),
+        ("aa:bb:cc:00:00:78", ("192.168.1.78",), "Kids at night"),
+        ("aa:bb:cc:00:00:79", ("192.168.1.79",), "Kids at night"),
+    }
+    # Resuming one blocked alone turns its rule off.
+    devices = apply(cfg, "pause.delete", {"mac": "aa:bb:cc:00:00:77"})
+    assert fw.rules[alone]["enabled"] == "0"
+    assert "aa:bb:cc:00:00:77" not in {p.mac for p in devices[0].paused or []}
+    # A rule blocking several devices is the user's to change.
+    with pytest.raises(PluginError, match="blocks other devices too"):
+        apply(cfg, "pause.delete", {"mac": "aa:bb:cc:00:00:78"})
+    assert fw.rules[shared]["enabled"] == "1"
+    # Omini's own pause is no block set by hand.
+    apply(cfg, "pause.set", TV)
+    [dev] = collect_module.collect(cfg)
+    assert {p.mac: p.rule for p in dev.paused}["aa:bb:cc:00:00:01"] is None

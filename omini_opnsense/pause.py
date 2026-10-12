@@ -305,6 +305,7 @@ def delete_pause(
     """Removes the device; the rules and the aliases go with the last one. An
     older (IPv4-only) pause is moved to the current shape on the way."""
     mac = nets.norm_mac(mac_value)
+    resume_manual(c, mac)  # a block set by hand goes off too
     found = aliases(c)
     items = items_of(found)
     left = [p for p in items if p["mac"] != mac]
@@ -328,3 +329,142 @@ def is_paused(c: Client, st: nets.State, mac: str, ips: list[str]) -> bool:
         and mac in entries(a.get("content"))
         and set(lan_interfaces(st)) <= blocked(st)
     )
+
+
+# --- blocks set by hand ------------------------------------------------------------
+#
+# A block rule the user wrote in OPNsense counts as a pause when it is simple:
+# enabled, block or reject, inbound, from hosts (IP addresses, MACs, or a
+# host or MAC alias of them) to anything, with no ports or schedule. Its
+# devices show as paused with the rule's name; resuming one turns the rule off
+# when it blocks that device alone.
+
+BLOCKS = ("block", "reject")
+
+
+def neighbours(c: Client) -> dict[str, str]:
+    """IP address → MAC, from the ARP and NDP tables; empty without them."""
+    out: dict[str, str] = {}
+    for path in ("/api/diagnostics/interface/search_arp", "/api/diagnostics/interface/get_ndp"):
+        try:
+            data = c.get(path, params={"rowCount": -1}) if path.endswith("arp") else c.get(path)
+        except (PluginError, Forbidden, NotFound):
+            continue
+        for r in data.get("rows", []) if isinstance(data, dict) else data or []:
+            mac = nets.norm_mac(r.get("mac")) if isinstance(r, dict) else ""
+            if mac and r.get("ip"):
+                out.setdefault(str(r["ip"]).lower(), mac)
+    return out
+
+
+def simple_block(r: dict[str, Any]) -> bool:
+    """A rule set by hand that only stops some hosts from reaching anything."""
+    return (
+        text(r.get("enabled")) not in ("0", "false")
+        and text(r.get("action")) in BLOCKS
+        and not text(r.get("description")).startswith(RULE_PREFIX.strip())
+        and text(r.get("direction")) in ("", "in")
+        and text(r.get("source_not")) != "1"
+        and text(r.get("destination_net")) in ("", "any")
+        and text(r.get("destination_not")) != "1"
+        and not text(r.get("source_port"))
+        and not text(r.get("destination_port"))
+        and not text(r.get("sched"))
+    )
+
+
+def hosts_of(source: str, by_name: dict[str, dict[str, Any]], depth: int = 0) -> list[str] | None:
+    """A rule's source as hosts (IP addresses or MACs); None when it is not
+    only hosts (a network, an interface, a URL table)."""
+    out: list[str] = []
+    for part in (p for p in re.split(r"[\s,]+", source) if p):
+        if nets.norm_mac(part):
+            out.append(nets.norm_mac(part))
+            continue
+        try:
+            net = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            a = by_name.get(part)
+            if a is None or depth > 2 or text(a.get("type")) not in ("host", "mac"):
+                return None
+            nested = hosts_of(text(a.get("content")), by_name, depth + 1)
+            if nested is None:
+                return None
+            out.extend(nested)
+            continue
+        if net.num_addresses != 1:
+            return None
+        out.append(str(net.network_address).lower())
+    return out
+
+
+def manual(c: Client) -> list[dict[str, Any]]:
+    """The devices blocked by simple rules set by hand, by MAC: {mac, ips,
+    name, rule, uuid, shared} (shared: the rule blocks other devices too)."""
+    rules = [r for r in rows(c, f"{RULES}/search_rule") if simple_block(r)]
+    if not rules:
+        return []
+    by_name = {text(a.get("name")): a for a in rows(c, f"{ALIASES}/search_item")}
+    ip_mac = neighbours(c)
+    out: dict[str, dict[str, Any]] = {}
+    for r in rules:
+        hosts = hosts_of(text(r.get("source_net")), by_name)
+        if not hosts:
+            continue
+        found: dict[str, list[str]] = {}
+        for h in hosts:
+            mac = h if nets.norm_mac(h) == h else ip_mac.get(h)
+            if mac:
+                ips = found.setdefault(mac, [])
+                if h != mac and ":" not in h:
+                    ips.append(h)
+        name = text(r.get("description")) or f"rule {text(r.get('uuid'))[:8]}"
+        for mac, ips in found.items():
+            out.setdefault(
+                mac,
+                {
+                    "mac": mac,
+                    "ips": sorted(set(ips)),
+                    "name": None,
+                    "rule": name,
+                    "uuid": text(r.get("uuid")),
+                    "shared": len(found) > 1,
+                },
+            )
+    return [out[m] for m in sorted(out)]
+
+
+def all_paused(c: Client) -> list[dict[str, Any]]:
+    """Omini's pauses and the blocks set by hand (Omini's wins for a MAC)."""
+    mine = paused(c)
+    seen = {p["mac"] for p in mine}
+    extra = [
+        {k: v for k, v in p.items() if k not in ("uuid", "shared")}
+        for p in quietly(lambda: manual(c), [])
+        if p["mac"] not in seen
+    ]
+    return sorted(mine + extra, key=lambda p: p["mac"])
+
+
+def quietly(fn, default):
+    """A read that needs a privilege only some users give: none without it."""
+    try:
+        return fn()
+    except (PluginError, Forbidden, NotFound):
+        return default
+
+
+def resume_manual(c: Client, mac: str) -> bool:
+    """Turns off the rule set by hand that blocks this device alone; refuses a
+    rule that blocks other devices too. Whether there was one."""
+    block = next((p for p in quietly(lambda: manual(c), []) if p["mac"] == mac), None)
+    if block is None:
+        return False
+    if block["shared"]:
+        raise PluginError(
+            f"the rule {block['rule']!r} blocks other devices too: change it in OPNsense "
+            "(Firewall → Rules)"
+        )
+    c.post(f"{RULES}/toggle_rule/{block['uuid']}/0")
+    c.post(f"{RULES}/apply")
+    return True

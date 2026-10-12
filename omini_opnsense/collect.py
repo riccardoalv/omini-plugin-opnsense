@@ -36,6 +36,11 @@ try:  # services, VPN peers, VLANs, DHCP pools, firewall states: Omini 0.3 and l
 except ImportError:
     EXTRAS = False
 
+try:  # paused devices: Omini 1.3 and later
+    from omini_sdk.models import PausedDevice
+except ImportError:
+    PausedDevice = None  # type: ignore[assignment,misc]
+
 try:  # backups: Omini 1.3 and later
     from omini_sdk import ConfigBackup
 except ImportError:
@@ -1164,6 +1169,14 @@ def router_networks(c: Client, ifaces: list[Interface], missing: list[str]) -> d
     )
 
 
+def paused_devices(c: Client) -> list[dict[str, Any]]:
+    """Omini's pauses and, with an Omini that knows them, the blocks set by hand."""
+    found = pause.all_paused(c)
+    if PausedDevice is None or "rule" not in PausedDevice.model_fields:
+        return [{k: v for k, v in p.items() if k != "rule"} for p in found if not p.get("rule")]
+    return found
+
+
 def homelab(c: Client, system_name: str) -> dict[str, Any]:
     """Local DNS names, the local domain and the paused devices. Their
     privileges are only needed by those who use them, so a refusal is quiet."""
@@ -1172,7 +1185,7 @@ def homelab(c: Client, system_name: str) -> dict[str, Any]:
         Device,
         dns_domain=domain,
         dns_records=quiet("the local DNS names", lambda: dns.records(c, domain), []) or None,
-        paused=quiet("the paused devices", lambda: pause.paused(c), []) or None,
+        paused=quiet("the paused devices", lambda: paused_devices(c), []) or None,
     )
 
 
@@ -1388,7 +1401,7 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
         mac = nets.norm_mac(value.get("mac"))
         pause.delete_pause(c, st, mac, lan_ipv6(ifaces, st))
         nets.wait_for(
-            lambda: not any(p["mac"] == mac for p in pause.paused(c)),
+            lambda: not any(p["mac"] == mac for p in pause.all_paused(c)),
             "the end of the pause",
         )
     elif kind == "network.set":
