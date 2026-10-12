@@ -59,9 +59,24 @@ class Client:
             raise forbidden
         raise NotFound(paths[0])
 
+    def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
+        """POSTs a change; OPNsense answers {"result": "failed", "validations": ...}
+        when it refuses one, which is raised with its messages."""
+        out = self._send("POST", path, None, body if body is not None else {})
+        if isinstance(out, dict) and str(out.get("result", "")).lower() == "failed":
+            problems = out.get("validations") or {}
+            detail = "; ".join(f"{k}: {v}" for k, v in problems.items()) or str(out)
+            raise PluginError(f"OPNsense refused {path}: {detail}")
+        if isinstance(out, dict) and str(out.get("status", "")).lower() == "failed":
+            raise PluginError(f"OPNsense could not apply {path}")
+        return out
+
     def _get(self, path: str, params: dict[str, Any] | None) -> Any:
+        return self._send("GET", path, params, None)
+
+    def _send(self, method: str, path: str, params: dict[str, Any] | None, body: Any) -> Any:
         try:
-            r = self.http.get(path, params=params)
+            r = self.http.request(method, path, params=params, json=body)
         except httpx.ConnectError as e:
             raise PluginError(f"cannot connect to {self.base}: {e}") from e
         except httpx.TimeoutException as e:

@@ -1,6 +1,6 @@
 # omini-plugin-opnsense
 
-[Omini](https://github.com/riccardoalv/omini) plugin for **OPNsense**, through its official REST API. Read-only: it never changes the firewall's configuration.
+[Omini](https://github.com/riccardoalv/omini) plugin for **OPNsense**, through its official REST API. It reads the firewall and, on OPNsense 26.7 or later, manages the networks of your VLANs from Omini: each VLAN's interface and gateway, its DHCP range and its access rules. It changes nothing else.
 
 ## What it reads
 
@@ -18,6 +18,23 @@
 | VPN peers — WireGuard, OpenVPN and IPsec: endpoint, tunnel address, connected, last handshake (WireGuard), traffic | VPN tunnels up/down |
 | DHCP pool usage (Kea and dnsmasq ranges, counted against the active leases) | A pool running out of addresses |
 | Firewall state table: current entries and limit | A state table filling up |
+| Networks (26.7+): each VLAN's interface, gateway, DHCP range and access rules; the LAN is VLAN 1 | The VLANs tab: a VLAN as a whole network |
+
+## What it changes
+
+Only when you create, change or delete a VLAN's network in Omini (the map's menu → **VLANs**), and only on OPNsense 26.7 or later, where interface assignments came to the API:
+
+- **Network** (`network.set`): the VLAN on the port toward your switches (a bridge's physical member), its interface with the gateway address, its DHCP range (Kea when it is on, else dnsmasq; the gateway is handed out as DNS) and its access rules:
+  - **Internet only**: DNS to the gateway, nothing to the private ranges (an alias `omini_private`: 10/8, 172.16/12, 192.168/16), everything else;
+  - **Whole network**: everything;
+  - **No internet**: DNS to the gateway only.
+
+  Picking one of them replaces the rules of that interface; rules set by hand that are none of them show as **Custom** in Omini and are left as they are until you pick one. Rules Omini writes start with "Omini:".
+- **Discovery between VLANs** (mDNS, part of `network.set`): the network joins or leaves the mDNS repeater of the **os-mdns-repeater** plugin (install it in System → Firmware → Plugins), which runs while two or more networks are in it.
+- **Fixed addresses** (`reservation.set`, `reservation.delete`): a DHCP reservation (Kea or dnsmasq) for a device's MAC, from the device's panel in Omini.
+- **Removing** it (`network.delete`): its rules, its DHCP, its discovery, its interface and its VLAN. Never the LAN.
+
+OPNsense saves every API change in its configuration; the plugin reads the firewall again until it serves the network as asked, and reports an error otherwise.
 
 Works with OPNsense 24.7 and later.
 
@@ -48,7 +65,11 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | VPN: WireGuard: Status | WireGuard peers, if you use WireGuard |
    | Status: OpenVPN | OpenVPN connections, if you use OpenVPN |
    | Status: IPsec | IPsec tunnels, if you use IPsec |
-   | **System: Deny config write** | **recommended**: some of the privileges above also allow changes; this one blocks configuration writes |
+   | Interfaces: Assignments | the networks (26.7+); to change them too |
+   | Firewall: Rules | the networks' access; to change it too |
+   | Firewall: Alias | the `omini_private` alias of "Internet only" |
+   | Services: mDNS Repeater | discovery between VLANs, if you use it |
+   | **System: Deny config write** | only if Omini should **not** manage networks: it blocks every configuration write |
 
 2. Edit the user again and, under **API keys**, click **+**: OPNsense downloads a file with the **key** and the **secret**.
 3. In Omini, fill in the firewall address (e.g. `https://192.168.1.1`), the key and the secret, and click **Test connection**: it tells you which privileges are missing, if any (the VPN ones are not reported: only those who use a VPN need them).
@@ -68,7 +89,7 @@ OPNsense uses a self-signed certificate by default, so *Verify the TLS certifica
 
 ## API endpoints used
 
-All `GET`, all read-only ([API reference](https://docs.opnsense.org/development/api.html)). Where OPNsense renamed an endpoint from camelCase to snake_case, both spellings are tried.
+Reading is all `GET`; the networks' changes are the `POST`s below ([API reference](https://docs.opnsense.org/development/api.html)). Where OPNsense renamed an endpoint from camelCase to snake_case, both spellings are tried.
 
 | Endpoint | Data | Reference |
 |---|---|---|
@@ -86,6 +107,13 @@ All `GET`, all read-only ([API reference](https://docs.opnsense.org/development/
 | `/api/wireguard/service/show` | WireGuard peers | [wireguard](https://docs.opnsense.org/development/api/core/wireguard.html) |
 | `/api/openvpn/service/search_sessions` | OpenVPN connections | [openvpn](https://docs.opnsense.org/development/api/core/openvpn.html) |
 | `/api/ipsec/sessions/search_phase1` | IPsec tunnels | [ipsec](https://docs.opnsense.org/development/api/core/ipsec.html) |
+| `/api/interfaces/assignment/search_item`, `add_item`, `set_item`, `del_item`, `reconfigure` | networks' interfaces (26.7+) | [interfaces](https://docs.opnsense.org/development/api/core/interfaces.html) |
+| `/api/interfaces/vlan_settings/add_item`, `del_item`, `reconfigure` | networks' VLANs | [interfaces](https://docs.opnsense.org/development/api/core/interfaces.html) |
+| `/api/kea/dhcpv4/get`, `set`, `add_subnet`, `set_subnet`, `del_subnet`, `/api/kea/service/reconfigure` | networks' DHCP (Kea) | [kea](https://docs.opnsense.org/development/api/core/kea.html) |
+| `/api/dnsmasq/settings/add_range`, `set_range`, `del_range`, `/api/dnsmasq/service/reconfigure` | networks' DHCP (dnsmasq) | [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
+| `/api/kea/dhcpv4/search_reservation`, `add_reservation`, `set_reservation`, `del_reservation`, `/api/dnsmasq/settings/search_host`, `add_host`, `set_host`, `del_host` | fixed addresses | [kea](https://docs.opnsense.org/development/api/core/kea.html), [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
+| `/api/mdnsrepeater/settings/get`, `set`, `/api/mdnsrepeater/service/reconfigure` | discovery between VLANs | os-mdns-repeater |
+| `/api/firewall/filter/search_rule`, `add_rule`, `del_rule`, `apply`, `/api/firewall/alias/search_item`, `add_item`, `reconfigure` | networks' access | [firewall](https://docs.opnsense.org/development/api/core/firewall.html) |
 
 ## Development
 

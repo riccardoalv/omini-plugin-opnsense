@@ -1,6 +1,6 @@
 id: opnsense
 name: OPNsense
-version: 0.3.1
+version: 0.4.0
 protocol: 1
 entrypoint: main.py
 timeout_s: 60
@@ -9,9 +9,15 @@ description: >-
   and traffic, VLANs, SFP modules, ARP, DHCP leases and pool usage, gateway
   status, VPN peers (WireGuard, OpenVPN, IPsec), services, firewall states,
   CPU, memory, swap, load, disks, temperatures, uptime and pending updates.
-  Read-only.
+  On 26.7 and later it also manages each VLAN's network: interface, gateway,
+  DHCP range and access rules.
 author: Omini
 homepage: https://github.com/riccardoalv/omini-plugin-opnsense
+changes:
+  - network.set
+  - network.delete
+  - reservation.set
+  - reservation.delete
 fields:
   - key: url
     type: url
