@@ -188,9 +188,30 @@ def put_alias(c: Client, current: dict[str, Any] | None, alias: dict[str, Any]) 
     return True
 
 
+def ndp_addresses(c: Client, mac: str) -> list[str]:
+    """The device's IPv6 addresses the firewall knows (its NDP table), but
+    link-local ones; none without the privilege."""
+    try:
+        rows = c.get("/api/diagnostics/interface/get_ndp")
+    except (PluginError, Forbidden, NotFound):
+        return []
+    rows = rows.get("rows", []) if isinstance(rows, dict) else rows or []
+    return sorted(
+        {
+            str(r.get("ip"))
+            for r in rows
+            if isinstance(r, dict)
+            and nets.norm_mac(r.get("mac")) == mac
+            and r.get("ip")
+            and not str(r.get("ip")).lower().startswith("fe80:")
+        }
+    )
+
+
 def kill_states(c: Client, ips: list[str]) -> None:
-    """Cuts the open connections of these addresses; best effort (IPv4: the
-    device's IPv6 addresses are not known to Omini)."""
+    """Cuts the open connections of these addresses, best effort: a pause
+    leaves the connections already open (a phone keeps its IPv6 ones to Google
+    for long) unless they are cut."""
     for ip in ips:
         with contextlib.suppress(PluginError, Forbidden, NotFound):
             c.post("/api/diagnostics/firewall/kill_states", {"filter": ip})
@@ -274,7 +295,7 @@ def set_pause(
     items = [p for p in paused(c) if p["mac"] != mac]
     items.append({"mac": mac, "ips": ips, "name": clean_name(want.get("name")) or None})
     sync(c, st, sorted(items, key=lambda p: p["mac"]), lan_ipv6 or [])
-    kill_states(c, ips)
+    kill_states(c, ips + ndp_addresses(c, mac))
     return ips
 
 

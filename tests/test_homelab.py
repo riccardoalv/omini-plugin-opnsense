@@ -68,6 +68,12 @@ class Firewall(Router):
             return 200, {"dnsmasq": dict(self.dnsmasq)}
         if path == "/api/dnsmasq/settings/search_host":
             return 200, self.search(self.hosts)
+        if path == "/api/diagnostics/interface/get_ndp":
+            return 200, [
+                {"mac": "AA:BB:CC:00:00:01", "ip": "2001:db8:1::50", "intf": "bridge0"},
+                {"mac": "aa:bb:cc:00:00:01", "ip": "fe80::1:50", "intf": "bridge0"},
+                {"mac": "aa:bb:cc:00:00:09", "ip": "2001:db8:1::99", "intf": "bridge0"},
+            ]
         if path == "/api/interfaces/lagg_settings/search_item":
             return 200, self.search(self.laggs)
         if path == "/api/core/backup/download/this":
@@ -277,7 +283,8 @@ def test_pauses_and_resumes_devices(fw, cfg):
             "fd00::/64",
         ],
     )
-    assert fw.killed == ["192.168.1.50"]
+    # The connections it had open are cut, IPv6 ones (from the NDP table) too.
+    assert fw.killed == ["192.168.1.50", "2001:db8:1::50"]
     # The pause rule is no network's access: the LAN is still "whole network".
     assert {n.vlan: n.access for n in devices[0].networks}[1] == "all"
 

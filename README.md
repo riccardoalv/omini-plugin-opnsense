@@ -89,6 +89,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Services: Wake on LAN | Wake-on-LAN (os-wol) |
    | Firewall: Alias, Firewall: Rules, Interfaces: Assignments | pausing a device's internet (26.7+) |
    | Diagnostics: Show States (or Diagnostics: pfTop) | cutting a paused device's open connections (optional: without it the pause still applies to new connections) |
+   | Diagnostics: NDP Table | finding a paused device's IPv6 addresses to cut its open IPv6 connections (optional: without it, IPv6 connections opened before the pause stay until they close) |
    | Diagnostics: Backup & Restore (System: Configuration: History on newer versions) | configuration backups (`config.xml`) |
    | **System: Deny config write** | only if Omini should **not** manage networks: it blocks every configuration write |
 
@@ -119,7 +120,7 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - os-wol: `POST /api/wol/wol/set` with `{"wake": {"interface": "lan", "mac": "…"}}`.
 - Aliases: `set_item/{uuid}` and `del_item/{uuid}` with `mac` and `network` aliases whose `content` is newline separated; rules with `sequence`, `source_net` set to an alias and `destination_not`, and `ipprotocol: inet46`.
 - Pausing over IPv6: that a `mac` alias used as a rule's source resolves to the device's IPv4 **and** IPv6 (NDP) addresses, including SLAAC temporary ones, soon enough after they appear; that the overview's `ipv6` rows of a tracked (delegated-prefix) LAN carry its global address with the prefix length; that a network alias mixes IPv4 and IPv6 networks in an `inet46` rule.
-- `POST /api/diagnostics/firewall/kill_states` with `{"filter": "<ip>"}`.
+- `POST /api/diagnostics/firewall/kill_states` with `{"filter": "<ip>"}`, for the device's IPv4 addresses and the IPv6 ones the NDP table (`GET /api/diagnostics/interface/get_ndp`) has for its MAC: the firewall keeps a connection opened before the pause, and a phone keeps its IPv6 ones (to Google, say) open for long.
 - `GET /api/core/backup/download/this` answering `config.xml`, and the privilege that grants it.
 - `/api/interfaces/lagg_settings/search_item` rows with `laggif` and `members`.
 
