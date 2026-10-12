@@ -21,7 +21,7 @@
 | Networks (26.7+): each VLAN's interface, gateway, DHCP range and access rules; the LAN is VLAN 1 | The VLANs tab: a VLAN as a whole network |
 | Link aggregations (LAGG): each member port and its `lagg` (members that are down too) | LAGs on the map |
 | Local DNS names: Unbound host overrides (A records), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
-| Paused devices (the `omini_paused` alias) | The pause mark on the map |
+| Paused devices (the `omini_paused_mac` alias) | The pause mark on the map |
 | The configuration, `config.xml` (on demand, not every round) | The device's configuration history and its differences |
 
 ## What it changes
@@ -46,7 +46,7 @@ Also, on any supported version:
 
 And on 26.7 or later:
 
-- **Pausing a device's internet** (`pause.set`, `pause.delete`): the device's IPv4 addresses go in a host alias `omini_paused` (its description keeps which MAC each address belongs to, e.g. `Omini paused: aa:bb:cc:dd:ee:ff 192.168.1.50 (TV)`), and each LAN-side interface gets one rule, first in its list (sequence 1): block from `omini_paused` to anything that is **not** `omini_private`, described "Omini: paused devices (no internet)". The device still reaches every private network. Its open connections are cut (states killed), when the API user may. Resuming the last device removes the rules and the alias. The pause rule is not part of a network's access (Internet only, Whole network…), and changing the access keeps it.
+- **Pausing a device's internet** (`pause.set`, `pause.delete`), over IPv4 **and IPv6**: the device's MAC goes in a MAC-address alias `omini_paused_mac` (OPNsense resolves it to the device's IPv4 and IPv6 addresses from its ARP and NDP tables, so the changing IPv6 temporary/privacy addresses of SLAAC are covered too; its description keeps the IPv4 addresses and name Omini sent, e.g. `Omini paused: aa:bb:cc:dd:ee:ff 192.168.1.50 (TV)`). Each LAN-side interface gets one rule, first in its list (sequence 1), for IPv4+IPv6: block from `omini_paused_mac` to anything that is **not** `omini_local`, described "Omini: paused devices (no internet)". `omini_local` is a network alias with what the device still reaches: the private IPv4 ranges, IPv6 link-local (`fe80::/10`), ULA (`fc00::/7`) and multicast (`ff00::/8`), and the IPv6 networks of the LAN-side interfaces (e.g. the ISP's prefix on the LAN), refreshed at every pause. The firewall's own MACs are never paused. Its open IPv4 connections are cut (states killed), when the API user may. Resuming the last device removes the rules and both aliases. The pause rule is not part of a network's access (Internet only, Whole network…), and changing the access keeps it. A pause made by 0.5.0 or earlier (the IPv4 host alias `omini_paused` and its IPv4 rules) is moved to the MAC alias at the next pause or resume, and can be resumed as usual.
 
 OPNsense saves every API change in its configuration; the plugin reads the firewall again until it serves the network as asked, and reports an error otherwise.
 
@@ -107,7 +107,7 @@ OPNsense uses a self-signed certificate by default, so *Verify the TLS certifica
 - **SFP modules:** OPNsense reads them from `ifconfig -v`, and only NICs whose driver reads the module's EEPROM report them. For a plain SFP/SFP+ module OPNsense keeps the identity, temperature and voltage; RX power and laser bias come only in the per-lane lines that QSFP modules print. Transmit power, wavelength and alarm thresholds are not in the API.
 - **Services:** OPNsense lists only the services enabled in its configuration, so each one is reported as enabled; a disabled service is simply not listed.
 - **WireGuard peers** count as connected after a handshake in the last 5 minutes, as in OPNsense's own status page; an idle peer without keepalive can show as not connected.
-- **Paused devices** are blocked by their IPv4 addresses (the rule is IPv4); Omini updates the alias when a paused device gets another address. A network created after a device was paused gets its pause rule at the next pause or resume.
+- **Paused devices** are blocked by their MAC, which OPNsense turns into addresses from its ARP and NDP tables: an address the firewall has not seen yet (a brand-new IPv6 temporary address) is blocked once OPNsense refreshes the alias (it does so periodically and whenever aliases are applied). A network created after a device was paused gets its pause rule at the next pause or resume.
 - **Spanning tree** of bridges is not reported: the API has no per-port STP state.
 
 ## Not verified on hardware
@@ -117,7 +117,8 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - Unbound host overrides: `search_host_override` rows with `hostname`, `domain`, `rr` (`A`, or `A (IPv4 address)` as the grid shows it) and `server`; `/api/unbound/settings/get` → `unbound.general.enabled`.
 - dnsmasq as a DNS server: `/api/dnsmasq/settings/get` → `dnsmasq.enable`, `port` (0 = DNS off) and `domain`; hosts with `host`, `domain`, `ip`, `hwaddr`.
 - os-wol: `POST /api/wol/wol/set` with `{"wake": {"interface": "lan", "mac": "…"}}`.
-- Aliases: `set_item/{uuid}` and `del_item/{uuid}` with a `host` alias whose `content` is newline separated; rules with `sequence`, `source_net` set to an alias and `destination_not`.
+- Aliases: `set_item/{uuid}` and `del_item/{uuid}` with `mac` and `network` aliases whose `content` is newline separated; rules with `sequence`, `source_net` set to an alias and `destination_not`, and `ipprotocol: inet46`.
+- Pausing over IPv6: that a `mac` alias used as a rule's source resolves to the device's IPv4 **and** IPv6 (NDP) addresses, including SLAAC temporary ones, soon enough after they appear; that the overview's `ipv6` rows of a tracked (delegated-prefix) LAN carry its global address with the prefix length; that a network alias mixes IPv4 and IPv6 networks in an `inet46` rule.
 - `POST /api/diagnostics/firewall/kill_states` with `{"filter": "<ip>"}`.
 - `GET /api/core/backup/download/this` answering `config.xml`, and the privilege that grants it.
 - `/api/interfaces/lagg_settings/search_item` rows with `laggif` and `members`.

@@ -111,8 +111,11 @@ class Firewall(Router):
             return super().post(path, body)
         return 200, {"result": "saved"}
 
+    def alias(self, name):
+        return next((a for a in self.aliases.values() if a["name"] == name), None)
+
     def paused_alias(self):
-        return next((a for a in self.aliases.values() if a["name"] == "omini_paused"), None)
+        return self.alias("omini_paused_mac")
 
 
 @pytest.fixture
@@ -237,8 +240,8 @@ TV = {"mac": "aa:bb:cc:00:00:01", "ips": ["192.168.1.50"], "name": "Living room 
 CONSOLE = {"mac": "aa:bb:cc:00:00:02", "ips": ["10.0.20.60", "fd00::6"], "name": "Console (kids)"}
 
 
-def pause_rules(fw):
-    return [r for r in fw.rules.values() if r["source_net"] == "omini_paused"]
+def pause_rules(fw, alias="omini_paused_mac"):
+    return [r for r in fw.rules.values() if r["source_net"] == alias]
 
 
 def test_pauses_and_resumes_devices(fw, cfg):
@@ -246,17 +249,34 @@ def test_pauses_and_resumes_devices(fw, cfg):
     assert [(p.mac, p.ips, p.name) for p in devices[0].paused] == [
         ("aa:bb:cc:00:00:01", ["192.168.1.50"], "Living room TV")
     ]
+    # A MAC alias: OPNsense finds the device's IPv4 and IPv6 addresses itself.
     alias = fw.paused_alias()
-    assert (alias["type"], alias["content"]) == ("host", "192.168.1.50")
-    # One rule per LAN-side network, before the others, to anything not private.
+    assert (alias["type"], alias["content"]) == ("mac", "aa:bb:cc:00:00:01")
+    assert alias["description"] == "Omini paused: aa:bb:cc:00:00:01 192.168.1.50 (Living room TV)"
+    # One rule per LAN-side network, before the others, IPv4 and IPv6, to
+    # anything not local.
     rules = pause_rules(fw)
     assert sorted(r["interface"] for r in rules) == ["lan", "opt1"]
     assert all(
-        (r["action"], r["destination_net"], r["destination_not"], r["sequence"])
-        == ("block", "omini_private", "1", "1")
+        (r["action"], r["ipprotocol"], r["destination_net"], r["destination_not"], r["sequence"])
+        == ("block", "inet46", "omini_local", "1", "1")
         for r in rules
     )
-    assert any(a["name"] == "omini_private" for a in fw.aliases.values())
+    # Its own networks stay reachable: private IPv4, link-local, ULA, multicast
+    # and the LAN's IPv6 network.
+    local = fw.alias("omini_local")
+    assert (local["type"], local["content"].split("\n")) == (
+        "network",
+        [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "fe80::/10",
+            "fc00::/7",
+            "ff00::/8",
+            "fd00::/64",
+        ],
+    )
     assert fw.killed == ["192.168.1.50"]
     # The pause rule is no network's access: the LAN is still "whole network".
     assert {n.vlan: n.access for n in devices[0].networks}[1] == "all"
@@ -264,9 +284,9 @@ def test_pauses_and_resumes_devices(fw, cfg):
     devices = apply(cfg, "pause.set", CONSOLE)
     assert {p.mac: p.ips for p in devices[0].paused} == {
         "aa:bb:cc:00:00:01": ["192.168.1.50"],
-        "aa:bb:cc:00:00:02": ["10.0.20.60"],  # IPv4 only
+        "aa:bb:cc:00:00:02": ["10.0.20.60"],  # its IPv6 is the MAC alias's job
     }
-    assert fw.paused_alias()["content"] == "10.0.20.60\n192.168.1.50"
+    assert fw.paused_alias()["content"] == "aa:bb:cc:00:00:01\naa:bb:cc:00:00:02"
     assert len(pause_rules(fw)) == 2  # not added again
 
     # The TV got another address: its entry is replaced.
@@ -275,12 +295,84 @@ def test_pauses_and_resumes_devices(fw, cfg):
 
     devices = apply(cfg, "pause.delete", {"mac": TV["mac"]})
     assert [p.mac for p in devices[0].paused] == ["aa:bb:cc:00:00:02"]
+    assert fw.paused_alias()["content"] == "aa:bb:cc:00:00:02"
     assert len(pause_rules(fw)) == 2
     devices = apply(cfg, "pause.delete", {"mac": CONSOLE["mac"]})
     assert not devices[0].paused
-    assert not pause_rules(fw) and fw.paused_alias() is None
+    # Everything the pause added is gone.
+    assert not pause_rules(fw)
+    assert fw.paused_alias() is None and fw.alias("omini_local") is None
     # Resuming a device that is not paused changes nothing.
+    posts = len(fw.posts)
     apply(cfg, "pause.delete", {"mac": CONSOLE["mac"]})
+    assert not [p for p in fw.posts[posts:] if "/firewall/" in p]
+
+
+def test_the_lans_public_ipv6_prefix_stays_reachable(fw, opnsense, cfg):
+    """The ISP's prefix on the LAN (SLAAC, temporary addresses): the paused
+    device loses the internet over IPv6, not the router or its neighbours."""
+    rows = opnsense.routes["/api/interfaces/overview/interfaces_info/1"]["rows"]
+    lan = next(r for r in rows if r["identifier"] == "lan")
+    lan["ipv6"] = [*lan["ipv6"], {"ipaddr": "2804:1128:bd7c:8800::1/64"}]
+    apply(cfg, "pause.set", TV)
+    content = fw.alias("omini_local")["content"].split("\n")
+    assert "2804:1128:bd7c:8800::/64" in content
+    assert not any(c.startswith("fe80::") and c != "fe80::/10" for c in content)
+    # The rule covers both families: an IPv6 address of the TV (not known to
+    # Omini) matches the MAC alias and is blocked toward the internet.
+    assert {r["ipprotocol"] for r in pause_rules(fw)} == {"inet46"}
+
+
+def test_an_older_ipv4_pause_moves_to_the_mac_alias(fw, cfg):
+    """0.5.0 paused by IPv4 address only: the next pause or resume migrates it."""
+    fw.aliases["old"] = {
+        "enabled": "1",
+        "name": "omini_paused",
+        "type": "host",
+        "content": "192.168.1.50",
+        "description": "Omini paused: aa:bb:cc:00:00:01 192.168.1.50 (TV)",
+    }
+    for ifname in ("lan", "opt1"):
+        fw.rules[f"old-{ifname}"] = {
+            "enabled": "1",
+            "action": "block",
+            "interface": ifname,
+            "ipprotocol": "inet",
+            "source_net": "omini_paused",
+            "destination_net": "omini_private",
+            "destination_not": "1",
+            "sequence": "1",
+        }
+    [dev] = collect_module.collect(cfg)
+    assert [(p.mac, p.ips) for p in dev.paused] == [("aa:bb:cc:00:00:01", ["192.168.1.50"])]
+    devices = apply(cfg, "pause.set", CONSOLE)
+    assert {p.mac for p in devices[0].paused} == {"aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02"}
+    assert fw.alias("omini_paused") is None and not pause_rules(fw, "omini_paused")
+    assert fw.paused_alias()["content"] == "aa:bb:cc:00:00:01\naa:bb:cc:00:00:02"
+    assert len(pause_rules(fw)) == 2
+
+
+def test_an_older_ipv4_pause_still_resumes(fw, cfg):
+    fw.aliases["old"] = {
+        "enabled": "1",
+        "name": "omini_paused",
+        "type": "host",
+        "content": "192.168.1.50",
+        "description": "Omini paused: aa:bb:cc:00:00:01 192.168.1.50 (TV)",
+    }
+    fw.rules["old-lan"] = {
+        "enabled": "1",
+        "action": "block",
+        "interface": "lan",
+        "ipprotocol": "inet",
+        "source_net": "omini_paused",
+        "destination_net": "omini_private",
+        "destination_not": "1",
+    }
+    devices = apply(cfg, "pause.delete", {"mac": "aa:bb:cc:00:00:01"})
+    assert not devices[0].paused
+    assert not pause_rules(fw, "omini_paused") and not pause_rules(fw)
+    assert fw.alias("omini_paused") is None and fw.paused_alias() is None
 
 
 def test_a_pause_survives_its_network_access_change(fw, cfg):
@@ -300,6 +392,10 @@ def test_pause_refusals(fw, cfg):
         apply(cfg, "pause.set", {"mac": TV["mac"], "ips": ["fd00::1"]})
     with pytest.raises(PluginError, match="MAC"):
         apply(cfg, "pause.set", {"mac": "nope", "ips": ["192.168.1.5"]})
+    # The firewall's own LAN port.
+    with pytest.raises(PluginError, match="firewall itself"):
+        apply(cfg, "pause.set", {"mac": "00:0d:b9:aa:bb:cc", "ips": ["192.168.1.1"]})
+    assert fw.paused_alias() is None
 
 
 def test_description_round_trip():

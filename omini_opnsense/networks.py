@@ -27,8 +27,11 @@ MDNS = "/api/mdnsrepeater"  # the os-mdns-repeater plugin
 # The private ranges, an alias the "Internet only" rules block.
 PRIVATE_ALIAS = "omini_private"
 PRIVATE_RANGES = "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16"
-# The paused devices' addresses (see pause.py); its rule is no network's access.
-PAUSED_ALIAS = "omini_paused"
+# The paused devices' MACs (see pause.py); its rules are no network's access.
+PAUSED_ALIAS = "omini_paused_mac"
+# Before 0.5.1: the paused devices' IPv4 addresses (migrated by the next pause or resume).
+LEGACY_PAUSED_ALIAS = "omini_paused"
+PAUSED_ALIASES = (PAUSED_ALIAS, LEGACY_PAUSED_ALIAS)
 # Rules Omini writes start with this, so a person reading them knows.
 RULE_PREFIX = "Omini: "
 
@@ -159,7 +162,7 @@ def rules_on(st: State, ifname: str) -> list[dict[str, Any]]:
         for r in st.rules
         if ifname in text(r.get("interface")).lower().split(",")
         and text(r.get("enabled")) not in ("0", "false")
-        and text(r.get("source_net")) != PAUSED_ALIAS
+        and text(r.get("source_net")) not in PAUSED_ALIASES
     ]
 
 
@@ -464,7 +467,7 @@ def apply_delete(c: Client, st: State, vid: int) -> None:
         raise PluginError(f"the router serves no network on VLAN {vid}")
     ifname, device = n["interface"], n["device"]
     for r in st.rules:  # its pause rule, if a device is paused
-        if text(r.get("source_net")) == PAUSED_ALIAS and text(r.get("interface")) == ifname:
+        if text(r.get("source_net")) in PAUSED_ALIASES and text(r.get("interface")) == ifname:
             c.post(f"{RULES}/del_rule/{r['uuid']}")
     drop_rules(c, st, ifname)
     set_mdns(c, st, ifname, False)

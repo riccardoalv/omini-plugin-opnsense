@@ -1340,6 +1340,14 @@ def wake(c: Client, value: dict[str, Any]) -> None:
         ) from e
 
 
+def lan_ipv6(ifaces: list[Interface], st: nets.State) -> list[str]:
+    """The IPv6 addresses (with their prefix) of the LAN-side interfaces: the
+    networks a paused device still reaches."""
+    lan = {a.ifname: a.device for a in st.assigned}
+    devices = {lan[i] for i in pause.lan_interfaces(st) if i in lan}
+    return [ip for i in ifaces if i.name in devices for ip in i.ips or [] if ":" in ip]
+
+
 def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
     """Networks, fixed addresses and pauses: they need the interface assignments."""
     ifaces, _, _ = interfaces(c, vlan_config(c))
@@ -1370,7 +1378,7 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
             "the removal of the reservation",
         )
     elif kind == "pause.set":
-        ips = pause.set_pause(c, st, value)
+        ips = pause.set_pause(c, st, value, lan_ipv6(ifaces, st), {i.mac for i in ifaces if i.mac})
         mac = nets.norm_mac(value["mac"])
         nets.wait_for(
             lambda: pause.is_paused(c, nets.read_state(c, wan) or nets.State(), mac, ips),
@@ -1378,7 +1386,7 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
         )
     elif kind == "pause.delete":
         mac = nets.norm_mac(value.get("mac"))
-        pause.delete_pause(c, st, mac)
+        pause.delete_pause(c, st, mac, lan_ipv6(ifaces, st))
         nets.wait_for(
             lambda: not any(p["mac"] == mac for p in pause.paused(c)),
             "the end of the pause",
