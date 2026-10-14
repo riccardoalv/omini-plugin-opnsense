@@ -1,0 +1,5 @@
+[
+ {"mac":"AA:BB:CC:DD:EE:01","ip":"2001:db8:1::50","intf":"igb1","intf_description":"LAN","manufacturer":"Apple, Inc."},
+ {"mac":"aa:bb:cc:dd:ee:01","ip":"fe80::1:50","intf":"igb1","intf_description":"LAN","manufacturer":"Apple, Inc."},
+ {"mac":"(incomplete)","ip":"2001:db8:1::99","intf":"igb1","intf_description":"LAN","manufacturer":""}
+]

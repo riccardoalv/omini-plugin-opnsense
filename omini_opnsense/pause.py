@@ -188,20 +188,25 @@ def put_alias(c: Client, current: dict[str, Any] | None, alias: dict[str, Any]) 
     return True
 
 
+def ndp_rows(c: Client) -> list[dict[str, Any]]:
+    """The NDP table's rows ({mac, ip, intf, …}): a list, or {"rows": [...]}."""
+    rows = c.get("/api/diagnostics/interface/get_ndp")
+    rows = rows.get("rows", []) if isinstance(rows, dict) else rows or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
 def ndp_addresses(c: Client, mac: str) -> list[str]:
     """The device's IPv6 addresses the firewall knows (its NDP table), but
     link-local ones; none without the privilege."""
     try:
-        rows = c.get("/api/diagnostics/interface/get_ndp")
+        rows = ndp_rows(c)
     except (PluginError, Forbidden, NotFound):
         return []
-    rows = rows.get("rows", []) if isinstance(rows, dict) else rows or []
     return sorted(
         {
             str(r.get("ip"))
             for r in rows
-            if isinstance(r, dict)
-            and nets.norm_mac(r.get("mac")) == mac
+            if nets.norm_mac(r.get("mac")) == mac
             and r.get("ip")
             and not str(r.get("ip")).lower().startswith("fe80:")
         }

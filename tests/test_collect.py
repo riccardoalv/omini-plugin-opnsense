@@ -43,6 +43,36 @@ def test_arp_and_leases_from_every_dhcp_server(opnsense, cfg):
     assert fw.dhcp_leases[2].expires_at.isoformat() == "2100-01-01T00:00:00+00:00"
 
 
+def test_ndp(opnsense, cfg):
+    [fw] = collect(cfg)
+    # MACs normalized like ARP's; an incomplete entry has no MAC.
+    assert [(n.ip, n.mac, n.interface) for n in fw.ndp] == [
+        ("2001:db8:1::50", "aa:bb:cc:dd:ee:01", "igb1"),
+        ("fe80::1:50", "aa:bb:cc:dd:ee:01", "igb1"),
+    ]
+
+
+def test_ndp_as_rows(opnsense, cfg):
+    path = "/api/diagnostics/interface/get_ndp"
+    opnsense.routes[path] = {"rows": opnsense.routes[path][:1]}
+    [fw] = collect(cfg)
+    assert [n.ip for n in fw.ndp] == ["2001:db8:1::50"]
+
+
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_ndp_failing_leaves_it_out(opnsense, cfg, status):
+    path = "/api/diagnostics/interface/get_ndp"
+    if status == 403:
+        opnsense.forbidden = {path}
+    elif status == 404:
+        del opnsense.routes[path]
+    else:
+        opnsense.broken = {path}
+    [fw] = collect(cfg)
+    assert fw.ndp is None and fw.arp  # the rest still works
+    assert "NDP" not in connection_test(cfg)  # not a missing privilege to report
+
+
 def test_gateways(opnsense, cfg):
     [fw] = collect(cfg)
     gw = {g.name: g for g in fw.gateways}

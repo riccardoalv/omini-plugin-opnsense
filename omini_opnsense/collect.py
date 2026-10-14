@@ -412,6 +412,22 @@ def arp(c: Client) -> list[ArpEntry]:
     return out
 
 
+def ndp(c: Client) -> list[ArpEntry]:
+    """IPv6 neighbours, so flows over IPv6 reach the device's MAC. Extra data:
+    an error reading it leaves it out instead of failing the collection."""
+    try:
+        rows = pause.ndp_rows(c)
+    except PluginError as e:
+        log.info("could not read the NDP table: %s", e)
+        return []
+    out = []
+    for row in rows:
+        m, ip = mac(row.get("mac")), str(row.get("ip") or "").strip().lower()
+        if m and ip:
+            out.append(ArpEntry(ip=ip, mac=m, interface=row.get("intf") or None))
+    return out
+
+
 def leases(c: Client, missing: list[str]) -> list[DhcpLease]:
     """Leases of every DHCP server in use (ISC, Kea, dnsmasq), merged."""
     now = time.time()
@@ -1252,6 +1268,7 @@ def collect(cfg: Config) -> list[Device]:
             ips=ips or None,
             interfaces=ifaces or None,
             arp=optional("arp", missing, lambda: arp(c), []) or None,
+            **newer_fields(Device, ndp=quiet("the NDP table", lambda: ndp(c), []) or None),
             dhcp_leases=dhcp or None,
             gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
             **(health(c, clock, missing) if HEALTH else {}),

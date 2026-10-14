@@ -8,6 +8,7 @@
 |---|---|
 | Interfaces: name, description, status, MAC, IPs, **link speed / media** (e.g. `2500Base-T <full-duplex>`), traffic and error counters | Ports of the firewall on the map, link speed, traffic |
 | ARP table | Which IP and MAC are on which interface |
+| NDP table (IPv6 neighbours) | Which IPv6 address belongs to which MAC, so traffic over IPv6 reaches the right device |
 | DHCP leases — ISC, Kea and dnsmasq (whichever is in use) | Names of devices the network scan only knows by MAC |
 | Hostname, version, CPU, memory, swap, load, disks, temperatures, uptime | Firewall health |
 | Pending firmware updates (from the last check made in OPNsense) | Firewall health |
@@ -90,7 +91,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Services: Wake on LAN | Wake-on-LAN (os-wol) |
    | Firewall: Alias, Firewall: Rules, Interfaces: Assignments | pausing a device's internet (26.7+) |
    | Diagnostics: Show States (or Diagnostics: pfTop) | cutting a paused device's open connections (optional: without it the pause still applies to new connections) |
-   | Diagnostics: NDP Table | finding a paused device's IPv6 addresses to cut its open IPv6 connections (optional: without it, IPv6 connections opened before the pause stay until they close) |
+   | Diagnostics: NDP Table | the NDP table (IPv6 neighbours), and finding a paused device's IPv6 addresses to cut its open IPv6 connections (optional: without it there are no IPv6 neighbours, and IPv6 connections opened before the pause stay until they close) |
    | Diagnostics: Backup & Restore (System: Configuration: History on newer versions) | configuration backups (`config.xml`) |
    | **System: Deny config write** | only if Omini should **not** manage networks: it blocks every configuration write |
 
@@ -124,6 +125,7 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - `POST /api/diagnostics/firewall/kill_states` with `{"filter": "<ip>"}`, for the device's IPv4 addresses and the IPv6 ones the NDP table (`GET /api/diagnostics/interface/get_ndp`) has for its MAC: the firewall keeps a connection opened before the pause, and a phone keeps its IPv6 ones (to Google, say) open for long.
 - `GET /api/core/backup/download/this` answering `config.xml`, and the privilege that grants it.
 - `/api/interfaces/lagg_settings/search_item` rows with `laggif` and `members`.
+- `GET /api/diagnostics/interface/get_ndp` answering a list of `{mac, ip, intf}` (or `{rows: [...]}`), and that the *Diagnostics: NDP Table* privilege grants it.
 
 ## API endpoints used
 
@@ -135,6 +137,7 @@ Reading is all `GET`; the changes are the `POST`s below ([API reference](https:/
 | `/api/interfaces/overview/interfaces_info/1` | interfaces, VLAN ids, SFP modules | [interfaces](https://docs.opnsense.org/development/api/core/interfaces.html) |
 | `/api/interfaces/vlan_settings/search_item` | VLANs | [interfaces](https://docs.opnsense.org/development/api/core/interfaces.html) |
 | `/api/diagnostics/traffic/interface` | counters of virtual interfaces | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
+| `/api/diagnostics/interface/get_ndp` | NDP (IPv6 neighbours) | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
 | `/api/diagnostics/interface/search_arp` | ARP | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
 | `/api/diagnostics/firewall/pf_statistics/info`, `pf_statistics/memory` | state table entries and limit | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
 | `/api/dhcpv4/leases/search_lease`, `/api/kea/leases4/search`, `/api/dnsmasq/leases/search` | DHCP leases | [kea](https://docs.opnsense.org/development/api/core/kea.html), [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |

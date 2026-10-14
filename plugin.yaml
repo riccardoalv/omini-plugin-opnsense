@@ -1,12 +1,12 @@
 id: opnsense
 name: OPNsense
-version: 0.5.3
+version: 0.6.0
 protocol: 1
 entrypoint: main.py
 timeout_s: 60
 description: >-
   OPNsense firewall through its official REST API: interfaces with link speed
-  and traffic, VLANs, SFP modules, ARP, DHCP leases and pool usage, gateway
+  and traffic, VLANs, SFP modules, ARP, NDP, DHCP leases and pool usage, gateway
   status, VPN peers (WireGuard, OpenVPN, IPsec), services, firewall states,
   CPU, memory, swap, load, disks, temperatures, uptime and pending updates.
   It sets local DNS names (Unbound or dnsmasq), wakes devices (os-wol) and

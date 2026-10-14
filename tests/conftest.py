@@ -17,6 +17,7 @@ class FakeOPNsense:
     def __init__(self):
         self.routes = {}
         self.forbidden = set()
+        self.broken = set()  # paths that answer 500
         self.calls = []
         for f in FIXTURES.glob("*.json"):
             path = "/api/" + f.stem.replace("__", "/")
@@ -34,6 +35,8 @@ class FakeOPNsense:
         path = request.url.path
         if any(path.startswith(p) for p in self.forbidden):
             return httpx.Response(403)
+        if path in self.broken:
+            return httpx.Response(500)
         if path not in self.routes:
             return httpx.Response(404, json={"errorMessage": "Endpoint not found"})
         body = self.routes[path]
