@@ -369,3 +369,20 @@ def test_the_address_omini_uses_is_not_changed(router, cfg):
     with pytest.raises(PluginError, match="Omini reaches OPNsense at"):
         collect_module.apply(cfg, Change(device="x", kind="network.set", value=value))
     assert router.assigned["lan"]["ipaddr"] == "192.168.1.1/24"
+
+
+def test_a_failed_new_network_is_undone(router, cfg):
+    post = router.post
+
+    def refuse_subnet(path, body):
+        if path == "/api/kea/dhcpv4/add_subnet":
+            return 200, {"result": "failed", "validations": {"subnet4.pools": "bad pool"}}
+        return post(path, body)
+
+    router.post = refuse_subnet
+    vlans, assigned = dict(router.vlans), dict(router.assigned)
+    with pytest.raises(PluginError, match="bad pool"):
+        collect_module.apply(cfg, Change(device="x", kind="network.set", value=iot40()))
+    # The VLAN and the interface it had created are gone; what was there stays.
+    assert router.vlans == vlans and router.assigned == assigned
+    assert router.kea["interfaces"] == "lan"

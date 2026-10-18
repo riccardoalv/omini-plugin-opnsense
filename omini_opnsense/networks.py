@@ -509,6 +509,27 @@ def apply_delete(c: Client, st: State, vid: int) -> None:
         c.post(f"{VLANS}/reconfigure")
 
 
+def undo(c: Client, st: State, vlans: set[str], ifnames: set[str], subnets: set[str]) -> None:
+    """Removes what a network.set that failed had created: the interfaces
+    (with their rules, DHCP and discovery) and VLANs that were not among
+    ifnames and vlans before it; a Kea subnet among subnets stays."""
+    for a in st.assigned:
+        if a.ifname in ifnames:
+            continue
+        if own_rules(st, a.ifname):
+            drop_rules(c, st, a.ifname)
+        set_mdns(c, st, a.ifname, False)
+        with contextlib.suppress(ValueError):
+            if a.gateway and str(ipaddress.ip_interface(a.gateway).network) not in subnets:
+                set_dhcp(c, st, a.ifname, a.gateway, {"enabled": False}, "")
+        c.post(f"{ASSIGNMENTS}/del_item/{a.ifname}")
+        c.post(f"{ASSIGNMENTS}/reconfigure")
+    for device, v in st.vlans.items():
+        if device not in vlans and v.get("uuid"):
+            c.post(f"{VLANS}/del_item/{v['uuid']}")
+            c.post(f"{VLANS}/reconfigure")
+
+
 def wait_for(check, what: str, tries: int = 10, pause: float = 1.0) -> None:
     """Interfaces come up a moment after reconfigure: reads again until check holds."""
     for i in range(tries):

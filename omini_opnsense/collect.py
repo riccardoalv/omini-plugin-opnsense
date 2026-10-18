@@ -1458,8 +1458,20 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
             "the end of the pause",
         )
     elif kind == "network.set":
-        nets.apply_set(c, st, value, bridges_of(ifaces))
-        nets.wait_for(lambda: nets.matches(nets.read_state(c, wan), value), "the network")
+        vid = int(value["vlan"])
+        new = vid != 1 and not any(n["vlan"] == vid for n in nets.networks(st))
+        before = (
+            set(st.vlans),
+            {a.ifname for a in st.assigned},
+            {nets.text(s.get("subnet")) for s in st.subnets},
+        )
+        try:
+            nets.apply_set(c, st, value, bridges_of(ifaces))
+            nets.wait_for(lambda: nets.matches(nets.read_state(c, wan), value), "the network")
+        except (PluginError, Forbidden, NotFound):
+            if new:
+                undo(c, wan, *before)
+            raise
     else:
         vid = int(value["vlan"])
         nets.apply_delete(c, st, vid)
@@ -1471,6 +1483,16 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
             ),
             "the removal",
         )
+
+
+def undo(c: Client, wan: set[str], vlans: set[str], ifnames: set[str], subnets: set[str]) -> None:
+    """Removes what a network.set that failed had created (see nets.undo)."""
+    try:
+        st = nets.read_state(c, wan)
+        if st is not None:
+            nets.undo(c, st, vlans, ifnames, subnets)
+    except Exception:
+        log.exception("could not remove what was created for the network")
 
 
 def backup(cfg: Config) -> list[ConfigBackup]:
