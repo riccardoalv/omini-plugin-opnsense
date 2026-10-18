@@ -333,3 +333,10 @@ def test_shared_rules_are_no_network_s_access(router, cfg):
     collect_module.apply(cfg, Change(device="x", kind="network.delete", value={"vlan": 20}))
     # Neither the change nor the removal touched the rule the LAN still needs.
     assert router.rules["floating"] == shared
+
+
+def test_a_missing_endpoint_is_named(router, cfg):
+    router.kea["enabled"] = "0"  # dnsmasq, whose hosts this fake lacks
+    value = {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.50"}
+    with pytest.raises(PluginError, match="OPNsense has no /api/dnsmasq/settings/search_host"):
+        collect_module.apply(cfg, Change(device="x", kind="reservation.set", value=value))

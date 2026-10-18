@@ -76,7 +76,7 @@ PRIVILEGES = {
     "states": "Diagnostics: Firewall statistics",
     "lagg": "Interfaces: LAGG",
     "dns": "Services: Unbound DNS: Edit Host and Domain Override (or Services: Dnsmasq DNS/DHCP)",
-    "pause": "Firewall: Alias, Firewall: Rules, Interfaces: Assignments",
+    "pause": "Firewall: Alias, Firewall: Rules, Interfaces: Assignments, Interfaces: VLAN",
     "wol": "Services: Wake on LAN",
 }
 
@@ -1316,11 +1316,40 @@ def apply(cfg: Config, change: Any) -> list[Device]:
     except Forbidden as e:
         raise PluginError(
             f"the API user may not use {e}: give it the privilege "
-            + PRIVILEGES[CHANGES[change.kind]]
+            + privilege_of(str(e), change.kind)
+        ) from e
+    except NotFound as e:
+        raise PluginError(
+            f"OPNsense has no {e}: this change needs a newer OPNsense or a plugin it lacks"
         ) from e
     finally:
         c.close()
     return collect(cfg)
+
+
+# The privilege of each endpoint a change uses, so a refusal names the one
+# that is missing (a change reads more than its own endpoints).
+ENDPOINT_PRIVILEGES = (
+    ("/api/interfaces/vlan_settings/", "Interfaces: VLAN"),
+    ("/api/interfaces/assignment/", "Interfaces: Assignments"),
+    ("/api/interfaces/overview/", "Status: Interfaces"),
+    ("/api/kea/", "Services: DHCP: Kea(v4)"),
+    ("/api/dnsmasq/", "Services: Dnsmasq DNS/DHCP: Settings"),
+    ("/api/firewall/filter/", "Firewall: Rules"),
+    ("/api/firewall/alias/", "Firewall: Alias"),
+    ("/api/mdnsrepeater/", "Services: mDNS Repeater"),
+    ("/api/unbound/", "Services: Unbound DNS: Edit Host and Domain Override"),
+    ("/api/wol/", "Services: Wake on LAN"),
+    ("/api/diagnostics/system/", "Lobby: Dashboard"),
+)
+
+
+def privilege_of(path: str, kind: str) -> str:
+    """The privilege a refused endpoint needs; the change's own when unknown."""
+    return next(
+        (p for prefix, p in ENDPOINT_PRIVILEGES if path.startswith(prefix)),
+        PRIVILEGES[CHANGES[kind]],
+    )
 
 
 def apply_dns(c: Client, kind: str, value: dict[str, Any]) -> None:

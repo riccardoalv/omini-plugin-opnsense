@@ -89,7 +89,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Services: Unbound DNS: Edit Host and Domain Override (and Services: Unbound DNS: General, to see that Unbound is on) | local DNS names, with Unbound |
    | Services: Dnsmasq DNS/DHCP: Settings | local DNS names, with dnsmasq as the DNS server |
    | Services: Wake on LAN | Wake-on-LAN (os-wol) |
-   | Firewall: Alias, Firewall: Rules, Interfaces: Assignments | pausing a device's internet (26.7+) |
+   | Firewall: Alias, Firewall: Rules, Interfaces: Assignments, Interfaces: VLAN | pausing a device's internet (26.7+) |
    | Diagnostics: Show States (or Diagnostics: pfTop) | cutting a paused device's open connections (optional: without it the pause still applies to new connections) |
    | Diagnostics: NDP Table | the NDP table (IPv6 neighbours), and finding a paused device's IPv6 addresses to cut its open IPv6 connections (optional: without it there are no IPv6 neighbours, and IPv6 connections opened before the pause stay until they close) |
    | Diagnostics: Backup & Restore (System: Configuration: History on newer versions) | configuration backups (`config.xml`) |

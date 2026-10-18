@@ -241,6 +241,13 @@ def test_wakes_on_the_network_that_holds_the_address(fw, cfg):
         apply(cfg, "wol.send", {"mac": "aa:bb:cc:00:00:0a", "ip": "172.20.0.5"})
 
 
+def test_wake_names_the_privilege_it_lacks(fw, opnsense, cfg):
+    # The interfaces are read first: their privilege is the one missing.
+    opnsense.forbidden.add("/api/interfaces/overview/")
+    with pytest.raises(PluginError, match="Status: Interfaces"):
+        apply(cfg, "wol.send", {"mac": "aa:bb:cc:00:00:09"})
+
+
 def test_wake_needs_os_wol(fw, cfg):
     fw.wol = False
     with pytest.raises(PluginError, match="os-wol"):
@@ -410,6 +417,12 @@ def test_pause_refusals(fw, cfg):
     with pytest.raises(PluginError, match="firewall itself"):
         apply(cfg, "pause.set", {"mac": "00:0d:b9:aa:bb:cc", "ips": ["192.168.1.1"]})
     assert fw.paused_alias() is None
+
+
+def test_pause_names_the_vlan_privilege(fw, opnsense, cfg):
+    opnsense.forbidden.add("/api/interfaces/vlan_settings/")
+    with pytest.raises(PluginError, match="Interfaces: VLAN"):
+        apply(cfg, "pause.set", TV)
 
 
 def test_description_round_trip():
