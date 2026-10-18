@@ -1228,10 +1228,12 @@ def extras(
 # --- plugin entry points -------------------------------------------------------
 
 
-def device_key(ifaces: list[Interface], host: str) -> str:
-    """The LAN's MAC, else the first MAC, else the address Omini uses."""
+def device_key(ifaces: list[Interface], host: str, logical: dict[str, str]) -> str:
+    """The LAN's MAC, else the first MAC, else the address Omini uses. The LAN
+    is the "lan" interface, whatever description it was given."""
     macs = sorted({i.mac for i in ifaces if i.mac})
-    lan_mac = next((i.mac for i in ifaces if i.mac and i.description == "LAN"), None)
+    lan = logical.get("lan")
+    lan_mac = next((i.mac for i in ifaces if i.mac and lan and i.name == lan), None)
     return lan_mac or (macs[0] if macs else host)
 
 
@@ -1241,7 +1243,7 @@ def collect(cfg: Config) -> list[Device]:
         info = system_information(c)
         missing: list[str] = []
         vlan_cfg = optional("vlans", missing, lambda: vlan_config(c), {}) if EXTRAS else {}
-        ifaces, _logical, via = optional(
+        ifaces, logical, via = optional(
             "interfaces", missing, lambda: interfaces(c, vlan_cfg), ([], {}, {})
         )
         mark_lags(ifaces, quiet("the link aggregations", lambda: lagg_config(c), {}))
@@ -1255,7 +1257,7 @@ def collect(cfg: Config) -> list[Device]:
         dhcp = leases(c, missing)
         name = str(info.get("name") or "")
         device = Device(
-            key=device_key(ifaces, host),
+            key=device_key(ifaces, host, logical),
             name=name or host,
             host=host,
             role="firewall",
@@ -1443,8 +1445,10 @@ def backup(cfg: Config) -> list[ConfigBackup]:
     try:
         content = backups.config_xml(c)
         host = urlparse(c.base).hostname or c.base
-        ifaces = quiet("the interfaces", lambda: interfaces(c)[0], [])
-        return [ConfigBackup(device=device_key(ifaces, host), format="xml", content=content)]
+        ifaces, logical, _ = quiet("the interfaces", lambda: interfaces(c), ([], {}, {}))
+        return [
+            ConfigBackup(device=device_key(ifaces, host, logical), format="xml", content=content)
+        ]
     finally:
         c.close()
 

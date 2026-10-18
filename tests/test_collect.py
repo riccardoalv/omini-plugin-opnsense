@@ -17,6 +17,14 @@ def test_reads_the_firewall(opnsense, cfg):
     assert fw.ips == ["10.0.20.1", "192.168.1.1", "203.0.113.10"]
 
 
+def test_the_key_survives_renaming_the_lan(opnsense, cfg):
+    path = "/api/interfaces/overview/interfaces_info/1"
+    for row in opnsense.routes[path]["rows"]:
+        if row["identifier"] == "lan":
+            row["description"] = "Home"
+    assert collect(cfg)[0].key == "00:0d:b9:aa:bb:cc"  # still the lan interface's MAC
+
+
 def test_ports_with_speed_and_traffic(opnsense, cfg):
     [fw] = collect(cfg)
     ports = {i.name: i for i in fw.interfaces}
