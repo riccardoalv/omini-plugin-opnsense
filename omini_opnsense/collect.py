@@ -47,7 +47,7 @@ except ImportError:
     ConfigBackup = None
 
 from omini_opnsense import backup as backups
-from omini_opnsense import dns, pause
+from omini_opnsense import dns, forwards, pause
 from omini_opnsense import networks as nets
 from omini_opnsense.client import Client, Forbidden, NotFound
 
@@ -1215,6 +1215,15 @@ def homelab(c: Client, system_name: str) -> dict[str, Any]:
     )
 
 
+def port_forwards(c: Client, logical: dict[str, str]) -> dict[str, Any]:
+    """The port forwards (OPNsense 25.7 and later: Destination NAT API). Only
+    those who want them need the privilege, so a refusal is quiet."""
+    if "port_forwards" not in Device.model_fields:
+        return {}
+    found = quiet("the port forwards", lambda: forwards.forwards(c, logical), [])
+    return {"port_forwards": found or None}
+
+
 def extras(
     c: Client,
     ifaces: list[Interface],
@@ -1222,12 +1231,15 @@ def extras(
     dhcp: list[DhcpLease],
     missing: list[str],
     system_name: str = "",
+    logical: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """VLANs, services, VPN peers, DHCP pool usage and the state table."""
+    """VLANs, services, VPN peers, DHCP pool usage, the state table and the
+    port forwards."""
     return {
         "vlans": vlans(ifaces, vlan_cfg) or None,
         **router_networks(c, ifaces, missing),
         **homelab(c, system_name),
+        **port_forwards(c, logical or {}),
         "services": optional("services", missing, lambda: services(c), []) or None,
         "vpn_peers": vpn_peers(c) or None,
         "dhcp_pools": dhcp_pools(c, ifaces, dhcp) or None,
@@ -1284,7 +1296,7 @@ def collect(cfg: Config) -> list[Device]:
             dhcp_leases=dhcp or None,
             gateways=optional("gateways", missing, lambda: gateways(c, via), []) or None,
             **(health(c, clock, missing) if HEALTH else {}),
-            **(extras(c, ifaces, vlan_cfg, dhcp, missing, name) if EXTRAS else {}),
+            **(extras(c, ifaces, vlan_cfg, dhcp, missing, name, logical) if EXTRAS else {}),
         )
         if missing:
             log.warning("missing privileges: %s", ", ".join(sorted(set(missing))))

@@ -8,7 +8,8 @@ description: >-
   OPNsense firewall through its official REST API: interfaces with link speed
   and traffic, VLANs, SFP modules, ARP, NDP, DHCP leases and pool usage, gateway
   status, VPN peers (WireGuard, OpenVPN, IPsec), services, firewall states,
-  CPU, memory, swap, load, disks, temperatures, uptime and pending updates.
+  port forwards, CPU, memory, swap, load, disks, temperatures, uptime and
+  pending updates.
   It sets local DNS names (Unbound or dnsmasq), wakes devices (os-wol) and
   keeps the configuration's versions; on 26.7 and later it also manages each
   VLAN's network (interface, gateway, DHCP range, access rules), fixed

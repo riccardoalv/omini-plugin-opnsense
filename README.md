@@ -23,6 +23,7 @@
 | Link aggregations (LAGG): each member port and its `lagg` (members that are down too) | LAGs on the map |
 | Local DNS names: Unbound host overrides (A records) and their host aliases (when the API user may read them), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
 | Paused devices (the `omini_paused_mac` alias, and simple block rules set by hand) | The pause mark on the map |
+| Port forwards (Firewall → NAT → Destination NAT, 25.7+): protocol, WAN interface, external port or range, the device's address and port, who may use it, description, on or off | The router's **Exposed to the internet** section and its alerts (Omini never changes them) |
 | The configuration, `config.xml` (on demand, not every round) | The device's configuration history and its differences |
 
 ## What it changes
@@ -92,6 +93,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Firewall: Alias, Firewall: Rules, Interfaces: Assignments, Interfaces: VLAN | pausing a device's internet (26.7+) |
    | Diagnostics: Show States (or Diagnostics: pfTop) | cutting a paused device's open connections (optional: without it the pause still applies to new connections) |
    | Diagnostics: NDP Table | the NDP table (IPv6 neighbours), and finding a paused device's IPv6 addresses to cut its open IPv6 connections (optional: without it there are no IPv6 neighbours, and IPv6 connections opened before the pause stay until they close) |
+   | Firewall: NAT: Destination NAT | port forwards (25.7+; optional: without it none are reported). The plugin only reads them |
    | Diagnostics: Backup & Restore (System: Configuration: History on newer versions) | configuration backups (`config.xml`) |
    | **System: Deny config write** | only if Omini should **not** manage networks: it blocks every configuration write |
 
@@ -112,6 +114,7 @@ OPNsense uses a self-signed certificate by default, so *Verify the TLS certifica
 - **WireGuard peers** count as connected after a handshake in the last 5 minutes, as in OPNsense's own status page; an idle peer without keepalive can show as not connected.
 - **Paused devices** are blocked by their MAC, which OPNsense turns into addresses from its ARP and NDP tables: an address the firewall has not seen yet (a brand-new IPv6 temporary address) is blocked once OPNsense refreshes the alias (it does so periodically and whenever aliases are applied). A network created after a device was paused gets its pause rule at the next pause or resume.
 - **Spanning tree** of bridges is not reported: the API has no per-port STP state.
+- **Port forwards** come from the Destination NAT API of OPNsense 25.7 and later; an older firewall keeps them in the legacy configuration, which has no API, and reports none. A forward whose ports are an alias (not numbers or a well-known name such as `https`) is left out, and so is a *no redirect* rule; one with a negated source ("anyone but…") is reported as open to anyone. **UPnP / NAT-PMP mappings** (os-upnp) are not reported: the plugin has no API, only its status page (Omini's network scan asks the router's UPnP gateway for them).
 
 ## Not verified on hardware
 
@@ -126,6 +129,7 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - `POST /api/diagnostics/firewall/kill_states` with `{"filter": "<ip>"}`, for the device's IPv4 addresses and the IPv6 ones the NDP table (`GET /api/diagnostics/interface/get_ndp`) has for its MAC: the firewall keeps a connection opened before the pause, and a phone keeps its IPv6 ones (to Google, say) open for long.
 - `GET /api/core/backup/download/this` answering `config.xml`, and the privilege that grants it.
 - `/api/interfaces/lagg_settings/search_item` rows with `laggif` and `members`.
+- Destination NAT: `GET /api/firewall/d_nat/search_rule` rows with `disabled`, `nordr`, `interface` (comma separated identifiers), `protocol` (`tcp`, `udp`, `tcp/udp`), `source.network`, `source.not`, `destination.port`, `target`, `local-port` and `descr`, as the controller flattens the model; and the privilege *Firewall: NAT: Destination NAT*.
 - `GET /api/diagnostics/interface/get_ndp` answering a list of `{mac, ip, intf}` (or `{rows: [...]}`), and that the *Diagnostics: NDP Table* privilege grants it.
 
 ## API endpoints used
@@ -161,6 +165,7 @@ Reading is all `GET`; the changes are the `POST`s below ([API reference](https:/
 | `/api/dnsmasq/settings/get`, `search_host`, `add_host`, `set_host`, `del_host`, `/api/dnsmasq/service/reconfigure` | local DNS names (dnsmasq) | [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
 | `/api/wol/wol/set` | Wake-on-LAN | [wol](https://docs.opnsense.org/development/api/plugins/wol.html) |
 | `/api/firewall/alias/set_item`, `del_item`, `/api/firewall/filter/add_rule`, `del_rule`, `apply`, `/api/diagnostics/firewall/kill_states` | pausing a device's internet | [firewall](https://docs.opnsense.org/development/api/core/firewall.html) |
+| `/api/firewall/d_nat/search_rule` | port forwards (25.7+) | [firewall](https://docs.opnsense.org/development/api/core/firewall.html) |
 | `/api/core/backup/download/this` | configuration backups | [core](https://docs.opnsense.org/development/api/core/core.html) |
 
 ## Development
