@@ -566,19 +566,20 @@ def reservations(c: Client, st: State) -> list[dict[str, Any]]:
     return out
 
 
+def holds(subnet: str, addr: ipaddress.IPv4Address) -> bool:
+    """Whether a Kea subnet holds addr; a blank or malformed one holds nothing."""
+    try:
+        return addr in ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        return False
+
+
 def reserve(c: Client, st: State, want: dict[str, Any]) -> None:
     mac, ip = norm_mac(want.get("mac")), str(want.get("ip") or "")
     name = hostname(str(want.get("name") or ""))
     addr = ipaddress.IPv4Address(ip)
     if st.kea:
-        subnet = next(
-            (
-                s
-                for s in st.subnets
-                if addr in ipaddress.ip_network(text(s.get("subnet")), strict=False)
-            ),
-            None,
-        )
+        subnet = next((s for s in st.subnets if holds(text(s.get("subnet")), addr)), None)
         if subnet is None:
             raise PluginError(f"Kea has no subnet for {ip}: turn DHCP on in that network first")
         body = {

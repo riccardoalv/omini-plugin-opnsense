@@ -340,3 +340,10 @@ def test_a_missing_endpoint_is_named(router, cfg):
     value = {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.50"}
     with pytest.raises(PluginError, match="OPNsense has no /api/dnsmasq/settings/search_host"):
         collect_module.apply(cfg, Change(device="x", kind="reservation.set", value=value))
+
+
+def test_a_reservation_skips_subnets_it_cannot_read(router, cfg):
+    router.subnets = {"s0": {"subnet": "", "pools": ""}, **router.subnets}
+    value = {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.50"}
+    collect_module.apply(cfg, Change(device="x", kind="reservation.set", value=value))
+    assert [r["subnet"] for r in router.reservations.values()] == ["s1"]
