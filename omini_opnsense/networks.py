@@ -251,6 +251,15 @@ def physical_parent(_c: Client, parent: str, bridges: dict[str, list[str]]) -> s
     return (physical or members)[0]
 
 
+def descr_for(name: str, vid: int) -> str:
+    """An interface description OPNsense accepts: letters, digits and _ only,
+    not starting with a digit."""
+    out = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")[:22]
+    if not out or out[0].isdigit():
+        out = f"VLAN{vid}" + (f"_{out}" if out else "")
+    return out
+
+
 def ensure_vlan(c: Client, st: State, vid: int, parent: str, name: str) -> str:
     """The VLAN device on parent (vlan0.30), created when missing."""
     for device, v in st.vlans.items():
@@ -431,6 +440,7 @@ def apply_set(c: Client, st: State, want: dict[str, Any], bridges: dict[str, lis
     vid = int(want["vlan"])
     name = str(want.get("name") or "")
     gateway = str(want["gateway"])
+    descr = descr_for(name, vid) if name else ""
     existing = next((n for n in networks(st) if n["vlan"] == vid), None)
     if existing:
         device = existing["device"]
@@ -438,8 +448,8 @@ def apply_set(c: Client, st: State, want: dict[str, Any], bridges: dict[str, lis
         raise PluginError("the router has no LAN to change")
     else:
         parent = physical_parent(c, str(want.get("parent") or ""), bridges)
-        device = ensure_vlan(c, st, vid, parent, name)
-    ifname = ensure_assigned(c, st, device, name, gateway)
+        device = ensure_vlan(c, st, vid, parent, descr)
+    ifname = ensure_assigned(c, st, device, descr, gateway)
     set_dhcp(c, st, ifname, gateway, want.get("dhcp"), name)
     set_access(c, st, ifname, want.get("access"), name)
     if want.get("mdns") is not None:

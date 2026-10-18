@@ -347,3 +347,18 @@ def test_a_reservation_skips_subnets_it_cannot_read(router, cfg):
     value = {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.50"}
     collect_module.apply(cfg, Change(device="x", kind="reservation.set", value=value))
     assert [r["subnet"] for r in router.reservations.values()] == ["s1"]
+
+
+def test_names_become_descriptions_opnsense_accepts(router, cfg):
+    collect_module.apply(
+        cfg, Change(device="x", kind="network.set", value=iot40(name="Câmeras & IoT"))
+    )
+    assert router.assigned["opt2"]["descr"] == "C_meras_IoT"
+    assert next(v for v in router.vlans.values() if v["tag"] == "40")["descr"] == "C_meras_IoT"
+    router.posts.clear()
+    collect_module.apply(
+        cfg, Change(device="x", kind="network.set", value=iot40(name="Câmeras & IoT"))
+    )
+    assert "/api/interfaces/assignment/set_item/opt2" not in router.posts  # nothing to change
+    collect_module.apply(cfg, Change(device="x", kind="network.set", value=iot40(name="2nd")))
+    assert router.assigned["opt2"]["descr"] == "VLAN40_2nd"
