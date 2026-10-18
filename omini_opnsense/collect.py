@@ -302,6 +302,7 @@ def interfaces(
                     Interface,
                     vlan=vlan_tag(device, row, configured) if kind == "vlan" else None,
                     transceiver=transceiver(row.get("sfp")) if kind == "ethernet" else None,
+                    enabled=flag(row.get("enabled")),
                 ),
                 rx_bytes=counter(stats.get("bytes received")),
                 tx_bytes=counter(stats.get("bytes transmitted")),

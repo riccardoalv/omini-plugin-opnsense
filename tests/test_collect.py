@@ -24,6 +24,20 @@ def test_memory_without_a_total_is_left_empty(opnsense, cfg):
     assert fw.mem_pct is None and fw.mem_total_bytes is None and fw.mem_used_bytes is None
 
 
+def test_ports_say_whether_they_are_enabled(opnsense, cfg):
+    [fw] = collect(cfg)
+    ports = {i.name: i for i in fw.interfaces}
+    assert ports["igb0"].enabled is True and ports["igb2"].enabled is False
+    assert ports["igb2"].up is False
+
+
+def test_a_port_without_the_enabled_field_leaves_it_empty(opnsense, cfg):
+    for row in opnsense.routes["/api/interfaces/overview/interfaces_info/1"]["rows"]:
+        row.pop("enabled", None)
+    [fw] = collect(cfg)
+    assert all(i.enabled is None for i in fw.interfaces)
+
+
 def test_the_key_survives_renaming_the_lan(opnsense, cfg):
     path = "/api/interfaces/overview/interfaces_info/1"
     for row in opnsense.routes[path]["rows"]:

@@ -6,7 +6,7 @@
 
 | Data | Used for |
 |---|---|
-| Interfaces: name, description, status, MAC, IPs, **link speed / media** (e.g. `2500Base-T <full-duplex>`), traffic and error counters | Ports of the firewall on the map, link speed, traffic |
+| Interfaces: name, description, status, enabled or disabled, MAC, IPs, **link speed / media** (e.g. `2500Base-T <full-duplex>`), traffic and error counters | Ports of the firewall on the map, link speed, traffic |
 | ARP table | Which IP and MAC are on which interface |
 | NDP table (IPv6 neighbours) | Which IPv6 address belongs to which MAC, so traffic over IPv6 reaches the right device |
 | DHCP leases — ISC, Kea and dnsmasq (whichever is in use) | Names of devices the network scan only knows by MAC |
