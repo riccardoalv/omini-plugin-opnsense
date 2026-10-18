@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from omini_sdk import PluginError
+from omini_sdk.changes import apply_verify
 
 from omini_opnsense.client import Client, Forbidden, NotFound
 
@@ -535,14 +536,24 @@ def undo(c: Client, st: State, vlans: set[str], ifnames: set[str], subnets: set[
             c.post(f"{VLANS}/reconfigure")
 
 
-def wait_for(check, what: str, tries: int = 10, pause: float = 1.0) -> None:
-    """Interfaces come up a moment after reconfigure: reads again until check holds."""
-    for i in range(tries):
-        if check():
-            return
-        if i < tries - 1:
-            time.sleep(pause)
-    raise PluginError(f"OPNsense did not apply {what}")
+# How long a change waits for OPNsense to show it (the SDK's window).
+VERIFY_S = 30
+POLL_S = 2
+
+
+def wait_for(check, what: str, undo=None, apply=None) -> None:
+    """Interfaces come up a moment after reconfigure: reads again until check
+    holds (a read that fails meanwhile is read again); ``apply`` runs first
+    and ``undo`` puts things back when it does not hold."""
+    apply_verify(
+        apply or (lambda: None),
+        check,
+        undo,
+        timeout=VERIFY_S,
+        interval=POLL_S,
+        message=f"OPNsense did not apply {what}",
+        sleep=time.sleep,
+    )
 
 
 def matches(st: State | None, want: dict[str, Any]) -> bool:

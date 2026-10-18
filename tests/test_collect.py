@@ -176,3 +176,36 @@ def test_uptime_in_any_language():
     assert uptime_seconds("04:12:09") == 15129
     assert uptime_seconds("1 dia, 00:00:01") == 86401
     assert uptime_seconds("unknown") is None
+
+
+def test_an_optional_endpoint_that_fails_is_skipped(opnsense, cfg):
+    # A server error on optional data no longer fails the collection.
+    opnsense.broken = {"/api/routes/gateway/status"}
+    [fw] = collect(cfg)
+    assert fw.gateways is None and fw.interfaces
+
+
+def test_a_busy_firewall_is_asked_again(opnsense, cfg, monkeypatch):
+    import httpx
+
+    import omini_opnsense.collect as collect_module
+    from omini_opnsense.client import Client
+
+    pauses = []
+    monkeypatch.setattr("time.sleep", pauses.append)
+    busy = {"left": 1}
+    handler = opnsense.handler
+
+    def flaky(request):
+        if busy["left"]:
+            busy["left"] -= 1
+            return httpx.Response(503)
+        return handler(request)
+
+    monkeypatch.setattr(
+        collect_module,
+        "Client",
+        lambda *a, **kw: Client(*a, **{**kw, "transport": httpx.MockTransport(flaky)}),
+    )
+    [fw] = collect(cfg)
+    assert fw.name == "opnsense.localdomain" and pauses == [1.0]

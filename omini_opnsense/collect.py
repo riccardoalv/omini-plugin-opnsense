@@ -21,6 +21,8 @@ from omini_sdk import (
     PluginError,
     log,
 )
+from omini_sdk import optional as sdk_optional
+from omini_sdk.http import settings
 
 try:  # system health, in the SDK of Omini 0.2 and later
     from omini_sdk import Firmware, Storage, Temperature
@@ -86,7 +88,7 @@ def client_from(cfg: Config) -> Client:
     url, key, secret = cfg.str("url"), cfg.str("api_key"), cfg.str("api_secret")
     if not url or not key or not secret:
         raise PluginError("the address, API key and API secret are required")
-    return Client(url, key, secret, verify_tls=cfg.bool("verify_tls", False))
+    return Client(url, key, secret, **settings(cfg))
 
 
 # --- parsing helpers -------------------------------------------------------
@@ -200,19 +202,14 @@ def connector(row: dict[str, Any], speed: int | None) -> str | None:
 
 
 def optional(what: str, missing: list[str], fn: Callable[[], T], default: T) -> T:
-    """Optional data: a missing privilege or feature never fails the collection."""
-    try:
-        return fn()
-    except Forbidden:
+    """Optional data: a missing privilege or feature never fails the
+    collection; a missing privilege is reported (by its name in OPNsense)."""
+    denied: list[str] = []
+    out = sdk_optional(what, fn, default, missing=denied)
+    if denied:
         log.warning("no privilege for %s (%s)", what, PRIVILEGES.get(what, what))
         missing.append(PRIVILEGES.get(what, what))
-    except NotFound:
-        log.info("%s not available on this OPNsense", what)
-    except PluginError:
-        raise
-    except Exception:
-        log.exception("could not read %s", what)
-    return default
+    return out
 
 
 # --- readers ---------------------------------------------------------------
@@ -1051,16 +1048,7 @@ def ipsec_peers(c: Client) -> list[VpnPeer]:
 def quiet(what: str, fn: Callable[[], T], default: T) -> T:
     """Data only some firewalls have (a VPN, a DHCP server): its privilege is
     only needed by those who use it, so a refusal is not a missing privilege."""
-    try:
-        return fn()
-    except Forbidden:
-        log.info("no privilege for %s", what)
-    except NotFound:
-        log.info("%s not available on this OPNsense", what)
-    except PluginError:
-        raise
-    except Exception:
-        log.exception("could not read %s", what)
+    return sdk_optional(what, fn, default)
     return default
 
 
@@ -1398,41 +1386,16 @@ def apply(cfg: Config, change: Any) -> list[Device]:
             apply_router(c, change.kind, value)
     except Forbidden as e:
         raise PluginError(
-            f"the API user may not use {e}: give it the privilege "
-            + privilege_of(str(e), change.kind)
+            f"the API user may not use {e.resource}: give it the privilege "
+            + (e.privilege or PRIVILEGES[CHANGES[change.kind]])
         ) from e
     except NotFound as e:
         raise PluginError(
-            f"OPNsense has no {e}: this change needs a newer OPNsense or a plugin it lacks"
+            f"OPNsense has no {e.resource}: this change needs a newer OPNsense or a plugin it lacks"
         ) from e
     finally:
         c.close()
     return collect(cfg)
-
-
-# The privilege of each endpoint a change uses, so a refusal names the one
-# that is missing (a change reads more than its own endpoints).
-ENDPOINT_PRIVILEGES = (
-    ("/api/interfaces/vlan_settings/", "Interfaces: VLAN"),
-    ("/api/interfaces/assignment/", "Interfaces: Assignments"),
-    ("/api/interfaces/overview/", "Status: Interfaces"),
-    ("/api/kea/", "Services: DHCP: Kea(v4)"),
-    ("/api/dnsmasq/", "Services: Dnsmasq DNS/DHCP: Settings"),
-    ("/api/firewall/filter/", "Firewall: Rules"),
-    ("/api/firewall/alias/", "Firewall: Alias"),
-    ("/api/mdnsrepeater/", "Services: mDNS Repeater"),
-    ("/api/unbound/", "Services: Unbound DNS: Edit Host and Domain Override"),
-    ("/api/wol/", "Services: Wake on LAN"),
-    ("/api/diagnostics/system/", "Lobby: Dashboard"),
-)
-
-
-def privilege_of(path: str, kind: str) -> str:
-    """The privilege a refused endpoint needs; the change's own when unknown."""
-    return next(
-        (p for prefix, p in ENDPOINT_PRIVILEGES if path.startswith(prefix)),
-        PRIVILEGES[CHANGES[kind]],
-    )
 
 
 def port_enabled(c: Client, wan: set[str], port: str) -> bool | None:
@@ -1474,15 +1437,20 @@ def set_port(c: Client, port: str, enabled: bool) -> None:
                 f"{port} holds {host}, the address Omini reaches OPNsense at: "
                 "disabling it would cut Omini off"
             )
-    if assigned.enabled != enabled:
+
+    def turn(on: bool) -> None:
         c.post(
             f"{nets.ASSIGNMENTS}/set_item/{assigned.ifname}",
-            {"interface": {"enable": "1" if enabled else "0"}},
+            {"interface": {"enable": "1" if on else "0"}},
         )
         c.post(f"{nets.ASSIGNMENTS}/reconfigure")
+
+    changed = assigned.enabled != enabled
     nets.wait_for(
         lambda: port_enabled(c, wan, port) is enabled,
         f"{'enabling' if enabled else 'disabling'} {port}",
+        apply=(lambda: turn(enabled)) if changed else None,
+        undo=(lambda: turn(assigned.enabled)) if changed else None,
     )
 
 
@@ -1594,13 +1562,12 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
             {a.ifname for a in st.assigned},
             {nets.text(s.get("subnet")) for s in st.subnets},
         )
-        try:
-            nets.apply_set(c, st, value, bridges_of(ifaces))
-            nets.wait_for(lambda: nets.matches(nets.read_state(c, wan), value), "the network")
-        except (PluginError, Forbidden, NotFound):
-            if new:
-                undo(c, wan, *before)
-            raise
+        nets.wait_for(
+            lambda: nets.matches(nets.read_state(c, wan), value),
+            "the network",
+            apply=lambda: nets.apply_set(c, st, value, bridges_of(ifaces)),
+            undo=(lambda: undo(c, wan, *before)) if new else None,
+        )
     else:
         vid = int(value["vlan"])
         nets.apply_delete(c, st, vid)
@@ -1616,12 +1583,10 @@ def apply_router(c: Client, kind: str, value: dict[str, Any]) -> None:
 
 def undo(c: Client, wan: set[str], vlans: set[str], ifnames: set[str], subnets: set[str]) -> None:
     """Removes what a network.set that failed had created (see nets.undo)."""
-    try:
-        st = nets.read_state(c, wan)
-        if st is not None:
-            nets.undo(c, st, vlans, ifnames, subnets)
-    except Exception:
-        log.exception("could not remove what was created for the network")
+    st = nets.read_state(c, wan)
+    if st is None:
+        raise PluginError("the interface assignments cannot be read")
+    nets.undo(c, st, vlans, ifnames, subnets)
 
 
 def backup(cfg: Config) -> list[ConfigBackup]:

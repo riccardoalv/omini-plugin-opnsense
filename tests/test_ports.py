@@ -70,9 +70,22 @@ def test_needs_the_assignments_api(fw, cfg):
 
 def test_a_port_that_stays_up_fails(fw, cfg, monkeypatch):
     monkeypatch.setattr(collect_module.nets.time, "sleep", lambda _s: None)
-    fw.post = lambda path, body: (200, {"result": "saved"})  # accepted, never applied
-    with pytest.raises(PluginError, match="did not apply disabling vtnet0_vlan20"):
+    sent = []
+
+    def accept(path, body):  # accepted, never applied
+        sent.append((path, body))
+        return (200, {"result": "saved"})
+
+    fw.post = accept
+    with pytest.raises(
+        PluginError, match=r"did not apply disabling vtnet0_vlan20: .* within 30 s \(undone\)$"
+    ):
         toggle(cfg, "vtnet0_vlan20", False)
+    # The interface is turned back on.
+    assert sent[-2] == (
+        "/api/interfaces/assignment/set_item/opt1",
+        {"interface": {"enable": "1"}},
+    )
 
 
 def test_needs_a_boolean(fw, cfg):

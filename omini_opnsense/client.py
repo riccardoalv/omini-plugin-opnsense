@@ -1,4 +1,6 @@
-"""Minimal OPNsense REST API client (HTTP basic auth with an API key/secret)."""
+"""OPNsense REST API client (HTTP basic auth with an API key/secret), on the
+SDK's HTTP client: timeouts, retries, and errors that name the privilege a
+refused endpoint needs."""
 
 from __future__ import annotations
 
@@ -7,17 +9,30 @@ from typing import Any
 
 import httpx
 from omini_sdk import PluginError
+from omini_sdk.http import Client as HttpClient
+from omini_sdk.http import Forbidden, NotFound
+
+__all__ = ["ENDPOINT_PRIVILEGES", "Client", "Forbidden", "NotFound"]
+
+# The privilege of each endpoint (as named in System → Access → Users), so a
+# refusal names the one that is missing.
+ENDPOINT_PRIVILEGES = {
+    "/api/interfaces/vlan_settings/": "Interfaces: VLAN",
+    "/api/interfaces/assignment/": "Interfaces: Assignments",
+    "/api/interfaces/overview/": "Status: Interfaces",
+    "/api/interfaces/lagg_settings/": "Interfaces: LAGG",
+    "/api/kea/": "Services: DHCP: Kea(v4)",
+    "/api/dnsmasq/": "Services: Dnsmasq DNS/DHCP: Settings",
+    "/api/firewall/filter/": "Firewall: Rules",
+    "/api/firewall/alias/": "Firewall: Alias",
+    "/api/mdnsrepeater/": "Services: mDNS Repeater",
+    "/api/unbound/": "Services: Unbound DNS: Edit Host and Domain Override",
+    "/api/wol/": "Services: Wake on LAN",
+    "/api/diagnostics/system/": "Lobby: Dashboard",
+}
 
 
-class Forbidden(Exception):
-    """The API user lacks the privilege for an endpoint."""
-
-
-class NotFound(Exception):
-    """The endpoint does not exist (feature or plugin not installed)."""
-
-
-class Client:
+class Client(HttpClient):
     def __init__(
         self,
         url: str,
@@ -27,42 +42,38 @@ class Client:
         timeout: float = 15,
         transport: httpx.BaseTransport | None = None,
     ):
-        url = url.strip().rstrip("/")
-        if not url.startswith(("https://", "http://")):
-            url = "https://" + url
-        self.base = url
-        self.http = httpx.Client(
-            base_url=url,
+        super().__init__(
+            url,
+            name="OPNsense",
             auth=(key, secret),
-            verify=verify_tls,
+            verify_tls=verify_tls,
             timeout=timeout,
-            headers={"Accept": "application/json", "User-Agent": "omini-plugin-opnsense"},
+            user_agent="omini-plugin-opnsense",
+            unauthorized="OPNsense rejected the API key or secret",
+            forbidden_hint=ENDPOINT_PRIVILEGES,
             transport=transport,
         )
 
-    def close(self) -> None:
-        self.http.close()
-
-    def get(self, *paths: str, params: dict[str, Any] | None = None) -> Any:
+    def get(self, *paths: str, params: dict[str, Any] | None = None) -> Any:  # type: ignore[override]
         """GETs the first path that works. Several spellings are accepted
         because OPNsense privileges match the exact URL, and the dashboard ones
         changed from camelCase (up to 25.1) to snake_case (25.7+)."""
         forbidden: Forbidden | None = None
         for path in paths:
             try:
-                return self._get(path, params)
+                return self.request("GET", path, params=params)
             except Forbidden as e:
                 forbidden = e
             except NotFound:
                 continue
         if forbidden:
             raise forbidden
-        raise NotFound(paths[0])
+        raise NotFound(f"OPNsense has no {paths[0]}", status=404, resource=paths[0])
 
-    def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
+    def post(self, path: str, body: dict[str, Any] | None = None) -> Any:  # type: ignore[override]
         """POSTs a change; OPNsense answers {"result": "failed", "validations": ...}
         when it refuses one, which is raised with its messages."""
-        out = self._send("POST", path, None, body if body is not None else {})
+        out = self.request("POST", path, json=body if body is not None else {})
         if isinstance(out, dict) and str(out.get("result", "")).lower() == "failed":
             problems = out.get("validations") or {}
             detail = "; ".join(f"{k}: {v}" for k, v in problems.items()) or str(out)
@@ -73,48 +84,7 @@ class Client:
 
     def get_text(self, path: str) -> str:
         """GETs a file the API answers as is (not JSON), e.g. config.xml."""
-        try:
-            r = self.http.get(path, headers={"Accept": "*/*"})
-        except httpx.TimeoutException as e:
-            raise PluginError(f"{self.base} did not answer in time") from e
-        except httpx.HTTPError as e:
-            raise PluginError(f"request to {self.base} failed: {e}") from e
-        if r.status_code == 401:
-            raise PluginError("OPNsense rejected the API key or secret")
-        if r.status_code == 403:
-            raise Forbidden(path)
-        if r.status_code == 404:
-            raise NotFound(path)
-        if r.status_code >= 400:
-            raise PluginError(f"OPNsense answered {r.status_code} for {path}")
-        return r.text
-
-    def _get(self, path: str, params: dict[str, Any] | None) -> Any:
-        return self._send("GET", path, params, None)
-
-    def _send(self, method: str, path: str, params: dict[str, Any] | None, body: Any) -> Any:
-        try:
-            r = self.http.request(method, path, params=params, json=body)
-        except httpx.ConnectError as e:
-            raise PluginError(f"cannot connect to {self.base}: {e}") from e
-        except httpx.TimeoutException as e:
-            raise PluginError(f"{self.base} did not answer in time") from e
-        except httpx.HTTPError as e:
-            raise PluginError(f"request to {self.base} failed: {e}") from e
-        if r.status_code == 401:
-            raise PluginError("OPNsense rejected the API key or secret")
-        if r.status_code == 403:
-            raise Forbidden(path)
-        if r.status_code == 404:
-            raise NotFound(path)
-        if r.status_code >= 400:
-            raise PluginError(f"OPNsense answered {r.status_code} for {path}")
-        try:
-            return r.json()
-        except json.JSONDecodeError as e:
-            raise PluginError(
-                f"{self.base} did not answer with JSON: is it the OPNsense address?"
-            ) from e
+        return self.text(path)
 
     def stream_second_event(self, path: str, timeout: float = 4) -> dict[str, Any] | None:
         """Reads a server-sent events stream until its second event. The first
@@ -123,7 +93,7 @@ class Client:
         try:
             with self.http.stream("GET", path, timeout=timeout) as r:
                 if r.status_code == 403:
-                    raise Forbidden(path)
+                    raise Forbidden(privilege=self.privilege("GET", path), resource=path)
                 if r.status_code >= 400:
                     return None
                 for line in r.iter_lines():

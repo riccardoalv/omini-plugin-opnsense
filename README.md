@@ -49,12 +49,12 @@ Also, on any supported version:
 
 And on 26.7 or later:
 
-- **Turning a port on or off** (`port.enabled`): the interface assigned to the port is enabled or disabled (Interfaces → Assignments: `set_item` with `enable`, then `reconfigure`), and the plugin reads the assignment and the interface overview back until both say so. A port with no interface assigned is refused (assign it in OPNsense first), and so is disabling the interface that holds the address Omini reaches the firewall at; Omini also blocks, by default, disabling the port it comes through or the WAN.
+- **Turning a port on or off** (`port.enabled`): the interface assigned to the port is enabled or disabled (Interfaces → Assignments: `set_item` with `enable`, then `reconfigure`), and the plugin reads the assignment and the interface overview back until both say so (up to 30 s; otherwise the interface is put back as it was and the error says so). A port with no interface assigned is refused (assign it in OPNsense first), and so is disabling the interface that holds the address Omini reaches the firewall at; Omini also blocks, by default, disabling the port it comes through or the WAN.
 
 - **Pausing a device's internet** (`pause.set`, `pause.delete`), over IPv4 **and IPv6**: the device's MAC goes in a MAC-address alias `omini_paused_mac` (OPNsense resolves it to the device's IPv4 and IPv6 addresses from its ARP and NDP tables, so the changing IPv6 temporary/privacy addresses of SLAAC are covered too; its description keeps the IPv4 addresses and name Omini sent, e.g. `Omini paused: aa:bb:cc:dd:ee:ff 192.168.1.50 (TV)`). Each LAN-side interface gets one rule, first in its list (sequence 1), for IPv4+IPv6: block from `omini_paused_mac` to anything that is **not** `omini_local`, described "Omini: paused devices (no internet)". `omini_local` is a network alias with what the device still reaches: the private IPv4 ranges, IPv6 link-local (`fe80::/10`), ULA (`fc00::/7`) and multicast (`ff00::/8`), and the IPv6 networks of the LAN-side interfaces (e.g. the ISP's prefix on the LAN), refreshed at every pause. The firewall's own MACs are never paused. Its open IPv4 connections are cut (states killed), when the API user may. Resuming the last device removes the rules and both aliases. The pause rule is not part of a network's access (Internet only, Whole network…), and changing the access keeps it. A pause made by 0.5.0 or earlier (the IPv4 host alias `omini_paused` and its IPv4 rules) is moved to the MAC alias at the next pause or resume, and can be resumed as usual.
 - **Blocks set by hand** show as paused too: an enabled block or reject rule, inbound, from hosts (IP addresses, MACs, or a host or MAC alias of them, resolved to devices through the ARP and NDP tables) to anything, with no ports or schedule. Omini shows the rule's description as the reason. Resuming such a device turns the rule off (`POST /api/firewall/filter/toggle_rule/<uuid>/0`, then apply) when it blocks that device alone; a rule that blocks several devices is refused, to be changed in OPNsense. Other rules (with ports, networks, schedules) are left as they are.
 
-OPNsense saves every API change in its configuration; the plugin reads the firewall again until it serves the network as asked, and reports an error otherwise.
+OPNsense saves every API change in its configuration; the plugin reads the firewall again (every 2 seconds, up to 30) until it serves the network as asked, and reports an error otherwise (a new network it could not finish is removed: "(undone)").
 
 Works with OPNsense 24.7 and later.
 
@@ -107,7 +107,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
 
 DHCP pool usage needs no extra privilege: the Kea and dnsmasq privileges above also cover their ranges.
 
-OPNsense uses a self-signed certificate by default, so *Verify the TLS certificate* is off by default; turn it on if your firewall has a trusted certificate.
+OPNsense uses a self-signed certificate by default, so *Verify the TLS certificate* (under Advanced) is off by default; turn it on if your firewall has a trusted certificate. *Timeout* (under Advanced, 15 seconds by default) is how long the plugin waits for each answer; a refused connection or a busy firewall is asked again.
 
 ## Known limitations
 
