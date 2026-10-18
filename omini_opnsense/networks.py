@@ -11,6 +11,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from omini_sdk import PluginError
 
@@ -294,6 +295,11 @@ def ensure_assigned(c: Client, st: State, device: str, name: str, gateway: str) 
         }
     }
     current = next((a for a in st.assigned if a.device == device), None)
+    old_ip = current.gateway.partition("/")[0] if current else ""
+    if old_ip and old_ip != gateway.partition("/")[0] and old_ip == urlparse(c.base).hostname:
+        raise PluginError(
+            f"{old_ip} is the address Omini reaches OPNsense at: change it in OPNsense itself"
+        )
     if current is None:
         c.post(f"{ASSIGNMENTS}/add_item", body)
     elif (current.descr, current.gateway, current.enabled) != (

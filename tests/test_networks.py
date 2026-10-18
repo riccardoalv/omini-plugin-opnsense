@@ -362,3 +362,10 @@ def test_names_become_descriptions_opnsense_accepts(router, cfg):
     assert "/api/interfaces/assignment/set_item/opt2" not in router.posts  # nothing to change
     collect_module.apply(cfg, Change(device="x", kind="network.set", value=iot40(name="2nd")))
     assert router.assigned["opt2"]["descr"] == "VLAN40_2nd"
+
+
+def test_the_address_omini_uses_is_not_changed(router, cfg):
+    value = {"vlan": 1, "gateway": "192.168.2.1/24", "dhcp": {"enabled": False}}
+    with pytest.raises(PluginError, match="Omini reaches OPNsense at"):
+        collect_module.apply(cfg, Change(device="x", kind="network.set", value=value))
+    assert router.assigned["lan"]["ipaddr"] == "192.168.1.1/24"
