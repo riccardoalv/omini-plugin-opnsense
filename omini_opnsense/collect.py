@@ -78,6 +78,7 @@ PRIVILEGES = {
     "dns": "Services: Unbound DNS: Edit Host and Domain Override (or Services: Dnsmasq DNS/DHCP)",
     "pause": "Firewall: Alias, Firewall: Rules, Interfaces: Assignments, Interfaces: VLAN",
     "wol": "Services: Wake on LAN",
+    "ports": "Interfaces: Assignments (and Status: Interfaces)",
 }
 
 
@@ -1357,6 +1358,7 @@ def collect(cfg: Config) -> list[Device]:
 
 
 CHANGES = {
+    "port.enabled": "ports",
     "network.set": "networks",
     "network.delete": "networks",
     "reservation.set": "networks",
@@ -1370,17 +1372,25 @@ CHANGES = {
 
 
 def apply(cfg: Config, change: Any) -> list[Device]:
-    """network.set: a VLAN's network (its VLAN on the port toward the switches,
-    the interface and gateway, the DHCP range, the access rules); network.delete
-    removes it; reservation.*: fixed addresses; dns.*: local names; wol.send:
-    a Wake-on-LAN packet; pause.*: a device's internet. OPNsense saves what the
+    """port.enabled: a port's interface on or off; network.set: a VLAN's
+    network (its VLAN on the port toward the switches, the interface and
+    gateway, the DHCP range, the access rules); network.delete removes it;
+    reservation.*: fixed addresses; dns.*: local names; wol.send: a
+    Wake-on-LAN packet; pause.*: a device's internet. OPNsense saves what the
     API changes; the plugin reads the router again until it is as asked."""
     if change.kind not in CHANGES:
         raise PluginError(f"this plugin cannot apply {change.kind}")
-    value = change.value if isinstance(change.value, dict) else dict(change.value)
+    if change.kind == "port.enabled":
+        if not isinstance(change.value, bool) or not change.port:
+            raise PluginError("port.enabled needs a port and true or false")
+        value: dict[str, Any] = {}
+    else:
+        value = change.value if isinstance(change.value, dict) else dict(change.value)
     c = client_from(cfg)
     try:
-        if change.kind in ("dns.set", "dns.delete"):
+        if change.kind == "port.enabled":
+            set_port(c, str(change.port), change.value)
+        elif change.kind in ("dns.set", "dns.delete"):
             apply_dns(c, change.kind, value)
         elif change.kind == "wol.send":
             wake(c, value)
@@ -1422,6 +1432,57 @@ def privilege_of(path: str, kind: str) -> str:
     return next(
         (p for prefix, p in ENDPOINT_PRIVILEGES if path.startswith(prefix)),
         PRIVILEGES[CHANGES[kind]],
+    )
+
+
+def port_enabled(c: Client, wan: set[str], port: str) -> bool | None:
+    """Whether the port's interface is enabled, in its assignment and (when
+    the overview says) on the firewall; None when the two disagree yet."""
+    st = nets.read_state(c, wan)
+    assigned = next((a for a in st.assigned if a.device == port), None) if st else None
+    if assigned is None:
+        return None
+    ifaces, _, _ = interfaces(c)
+    live = next((i.enabled for i in ifaces if i.name == port), None)
+    if live is not None and live != assigned.enabled:
+        return None
+    return assigned.enabled
+
+
+def set_port(c: Client, port: str, enabled: bool) -> None:
+    """Enables or disables the interface assigned to a port (Interfaces →
+    Assignments, OPNsense 26.7 and later), then reads it back. The interface
+    whose address Omini reaches the firewall at is never disabled."""
+    ifaces, _, _ = interfaces(c)
+    wan = wan_devices(ifaces)
+    st = nets.read_state(c, wan)
+    if st is None:
+        raise PluginError(
+            "enabling or disabling a port needs OPNsense 26.7 or later and the privilege "
+            + PRIVILEGES["ports"]
+        )
+    assigned = next((a for a in st.assigned if a.device == port), None)
+    if assigned is None:
+        raise PluginError(f"{port} has no interface assigned in OPNsense: assign it there first")
+    if not enabled:
+        host = (urlparse(c.base).hostname or "").lower()
+        mine = {assigned.gateway.partition("/")[0].lower()} | {
+            ip.partition("/")[0].lower() for i in ifaces if i.name == port for ip in i.ips or []
+        }
+        if host and host in mine:
+            raise PluginError(
+                f"{port} holds {host}, the address Omini reaches OPNsense at: "
+                "disabling it would cut Omini off"
+            )
+    if assigned.enabled != enabled:
+        c.post(
+            f"{nets.ASSIGNMENTS}/set_item/{assigned.ifname}",
+            {"interface": {"enable": "1" if enabled else "0"}},
+        )
+        c.post(f"{nets.ASSIGNMENTS}/reconfigure")
+    nets.wait_for(
+        lambda: port_enabled(c, wan, port) is enabled,
+        f"{'enabling' if enabled else 'disabling'} {port}",
     )
 
 

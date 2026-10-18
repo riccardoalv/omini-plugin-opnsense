@@ -1,6 +1,6 @@
 # omini-plugin-opnsense
 
-[Omini](https://github.com/riccardoalv/omini) plugin for **OPNsense**, through its official REST API. It reads the firewall, keeps the versions of its configuration, sets local DNS names and wakes devices; on OPNsense 26.7 or later it also manages the networks of your VLANs from Omini (each VLAN's interface and gateway, its DHCP range and its access rules), fixed addresses and pausing a device's internet. It changes nothing else.
+[Omini](https://github.com/riccardoalv/omini) plugin for **OPNsense**, through its official REST API. It reads the firewall, keeps the versions of its configuration, sets local DNS names and wakes devices; on OPNsense 26.7 or later it also turns ports on and off and manages the networks of your VLANs from Omini (each VLAN's interface and gateway, its DHCP range and its access rules), fixed addresses and pausing a device's internet. It changes nothing else.
 
 ## What it reads
 
@@ -49,6 +49,8 @@ Also, on any supported version:
 
 And on 26.7 or later:
 
+- **Turning a port on or off** (`port.enabled`): the interface assigned to the port is enabled or disabled (Interfaces → Assignments: `set_item` with `enable`, then `reconfigure`), and the plugin reads the assignment and the interface overview back until both say so. A port with no interface assigned is refused (assign it in OPNsense first), and so is disabling the interface that holds the address Omini reaches the firewall at; Omini also blocks, by default, disabling the port it comes through or the WAN.
+
 - **Pausing a device's internet** (`pause.set`, `pause.delete`), over IPv4 **and IPv6**: the device's MAC goes in a MAC-address alias `omini_paused_mac` (OPNsense resolves it to the device's IPv4 and IPv6 addresses from its ARP and NDP tables, so the changing IPv6 temporary/privacy addresses of SLAAC are covered too; its description keeps the IPv4 addresses and name Omini sent, e.g. `Omini paused: aa:bb:cc:dd:ee:ff 192.168.1.50 (TV)`). Each LAN-side interface gets one rule, first in its list (sequence 1), for IPv4+IPv6: block from `omini_paused_mac` to anything that is **not** `omini_local`, described "Omini: paused devices (no internet)". `omini_local` is a network alias with what the device still reaches: the private IPv4 ranges, IPv6 link-local (`fe80::/10`), ULA (`fc00::/7`) and multicast (`ff00::/8`), and the IPv6 networks of the LAN-side interfaces (e.g. the ISP's prefix on the LAN), refreshed at every pause. The firewall's own MACs are never paused. Its open IPv4 connections are cut (states killed), when the API user may. Resuming the last device removes the rules and both aliases. The pause rule is not part of a network's access (Internet only, Whole network…), and changing the access keeps it. A pause made by 0.5.0 or earlier (the IPv4 host alias `omini_paused` and its IPv4 rules) is moved to the MAC alias at the next pause or resume, and can be resumed as usual.
 - **Blocks set by hand** show as paused too: an enabled block or reject rule, inbound, from hosts (IP addresses, MACs, or a host or MAC alias of them, resolved to devices through the ARP and NDP tables) to anything, with no ports or schedule. Omini shows the rule's description as the reason. Resuming such a device turns the rule off (`POST /api/firewall/filter/toggle_rule/<uuid>/0`, then apply) when it blocks that device alone; a rule that blocks several devices is refused, to be changed in OPNsense. Other rules (with ports, networks, schedules) are left as they are.
 
@@ -85,7 +87,7 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | VPN: WireGuard: Status | WireGuard peers, if you use WireGuard |
    | Status: OpenVPN | OpenVPN connections, if you use OpenVPN |
    | Status: IPsec | IPsec tunnels, if you use IPsec |
-   | Interfaces: Assignments | the networks (26.7+); to change them too |
+   | Interfaces: Assignments | the networks (26.7+); to change them too; turning ports on and off |
    | Firewall: Rules | the networks' access; to change it too |
    | Firewall: Alias | the `omini_private` alias of "Internet only" |
    | Services: mDNS Repeater | discovery between VLANs, if you use it |
@@ -135,6 +137,7 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - Destination NAT: `GET /api/firewall/d_nat/search_rule` rows with `disabled`, `nordr`, `interface` (comma separated identifiers), `protocol` (`tcp`, `udp`, `tcp/udp`), `source.network`, `source.not`, `destination.port`, `target`, `local-port` and `descr`, as the controller flattens the model; and the privilege *Firewall: NAT: Destination NAT*.
 - DHCPv6 leases: `GET /api/kea/leases6/search` rows with `address`, `hwaddr`, `hostname`, `state` (0 = active), `expire`, `type` and `prefix_len` (as Kea's leases4); `GET /api/dhcpv6/leases/search_lease` (os-isc-dhcp) rows with `address`, `mac`, `state` and `lease_type` (`ia-pd` for a delegated prefix); dnsmasq's leases with an IPv6 `address` and a MAC in `hwaddr`.
 - Unbound AAAA host overrides: `rr` `AAAA` (or `AAAA (IPv6 address)`) with the IPv6 address in `server`; dnsmasq hosts with several comma separated addresses in `ip`, and that `set_host` with only IPv6 addresses keeps the host.
+- Turning a port on or off: that `POST /api/interfaces/assignment/set_item/<identifier>` with only `{"interface": {"enable": "0"}}` changes that field and keeps the others, and that the overview's `enabled` follows after `reconfigure`.
 - `GET /api/diagnostics/interface/get_ndp` answering a list of `{mac, ip, intf}` (or `{rows: [...]}`), and that the *Diagnostics: NDP Table* privilege grants it.
 
 ## API endpoints used

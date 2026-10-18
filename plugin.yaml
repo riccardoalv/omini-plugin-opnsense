@@ -11,12 +11,14 @@ description: >-
   port forwards, CPU, memory, swap, load, disks, temperatures, uptime and
   pending updates.
   It sets local DNS names (Unbound or dnsmasq), wakes devices (os-wol) and
-  keeps the configuration's versions; on 26.7 and later it also manages each
+  keeps the configuration's versions; on 26.7 and later it also turns ports
+  on and off, manages each
   VLAN's network (interface, gateway, DHCP range, access rules), fixed
   addresses and pausing a device's internet.
 author: Omini
 homepage: https://github.com/riccardoalv/omini-plugin-opnsense
 changes:
+  - port.enabled
   - network.set
   - network.delete
   - reservation.set
