@@ -136,6 +136,11 @@ def vlan_of(st: State, a: Assigned) -> int | None:
     return 1 if a.ifname == "lan" else None
 
 
+def first_pool(subnet: dict[str, Any]) -> str:
+    """A Kea subnet's first pool; OPNsense separates them by commas or newlines."""
+    return text(subnet.get("pools")).replace("\n", ",").split(",")[0]
+
+
 def dhcp_of(st: State, a: Assigned) -> dict[str, Any] | None:
     if not a.gateway:
         return None
@@ -145,7 +150,7 @@ def dhcp_of(st: State, a: Assigned) -> dict[str, Any] | None:
             return {"enabled": False}
         for s in st.subnets:
             if text(s.get("subnet")) == str(net):
-                first = text(s.get("pools")).replace("\n", ",").split(",")[0]
+                first = first_pool(s)
                 if "-" in first:
                     lo, hi = (p.strip() for p in first.split("-", 1))
                     return {"enabled": True, "from": lo, "to": hi}
@@ -338,7 +343,7 @@ def set_dhcp(
             }
             if subnet is None:
                 c.post(f"{KEA}/add_subnet", body)
-            elif text(subnet.get("pools")).split(",")[0].replace(" ", "") != pools:
+            elif first_pool(subnet).replace(" ", "") != pools:
                 c.post(f"{KEA}/set_subnet/{subnet['uuid']}", body)
             if ifname not in st.kea_interfaces:
                 st.kea_interfaces.append(ifname)

@@ -386,3 +386,16 @@ def test_a_failed_new_network_is_undone(router, cfg):
     # The VLAN and the interface it had created are gone; what was there stays.
     assert router.vlans == vlans and router.assigned == assigned
     assert router.kea["interfaces"] == "lan"
+
+
+def test_a_kea_pool_list_on_lines_is_left_as_it_is(router, cfg):
+    pools = "192.168.1.100-192.168.1.199\n192.168.1.210-192.168.1.220"
+    router.subnets["s1"]["pools"] = pools
+    lan = {
+        "vlan": 1,
+        "gateway": "192.168.1.1/24",
+        "dhcp": {"enabled": True, "from": "192.168.1.100", "to": "192.168.1.199"},
+    }
+    collect_module.apply(cfg, Change(device="x", kind="network.set", value=lan))
+    assert "/api/kea/dhcpv4/set_subnet/s1" not in router.posts
+    assert router.subnets["s1"]["pools"] == pools
