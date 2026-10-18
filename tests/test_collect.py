@@ -13,8 +13,15 @@ def test_reads_the_firewall(opnsense, cfg):
     assert fw.host == "192.168.1.1"
     assert fw.uptime_s == ((3 * 24 + 4) * 60 + 12) * 60 + 9
     assert fw.mem_pct == 25.0
+    assert fw.mem_total_bytes == 8264171520 and fw.mem_used_bytes == 2066042880
     assert fw.cpu_pct == 3  # the second sample, not the average since boot
     assert fw.ips == ["10.0.20.1", "192.168.1.1", "203.0.113.10"]
+
+
+def test_memory_without_a_total_is_left_empty(opnsense, cfg):
+    opnsense.routes["/api/diagnostics/system/system_resources"] = {"memory": {"used": 1}}
+    [fw] = collect(cfg)
+    assert fw.mem_pct is None and fw.mem_total_bytes is None and fw.mem_used_bytes is None
 
 
 def test_the_key_survives_renaming_the_lan(opnsense, cfg):

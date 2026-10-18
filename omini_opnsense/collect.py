@@ -548,15 +548,19 @@ def gateways(c: Client, via: dict[str, str] | None = None) -> list[Gateway]:
     return out
 
 
-def memory_pct(c: Client) -> float | None:
+def memory(c: Client) -> dict[str, Any]:
+    """mem_pct, and the installed and used bytes it comes from."""
     data = c.get(
         "/api/diagnostics/system/system_resources", "/api/diagnostics/system/systemResources"
     )
     mem = data.get("memory") or {}
-    total, used = number(mem.get("total")), number(mem.get("used"))
+    total, used = counter(mem.get("total")), counter(mem.get("used"))
     if not total or used is None:
-        return None
-    return round(used / total * 100, 1)
+        return {}
+    return {
+        "mem_pct": round(used / total * 100, 1),
+        **newer_fields(Device, mem_total_bytes=total, mem_used_bytes=used),
+    }
 
 
 def system_time(c: Client) -> dict[str, Any]:
@@ -1270,7 +1274,7 @@ def collect(cfg: Config) -> list[Device]:
             os_version=os_version,
             uptime_s=uptime_seconds(clock.get("uptime")),
             cpu_pct=optional("system", missing, lambda: cpu_pct(c), None),
-            mem_pct=optional("system", missing, lambda: memory_pct(c), None),
+            **optional("system", missing, lambda: memory(c), {}),
             macs=macs or None,
             ips=ips or None,
             interfaces=ifaces or None,

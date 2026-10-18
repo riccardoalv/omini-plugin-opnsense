@@ -10,7 +10,7 @@
 | ARP table | Which IP and MAC are on which interface |
 | NDP table (IPv6 neighbours) | Which IPv6 address belongs to which MAC, so traffic over IPv6 reaches the right device |
 | DHCP leases — ISC, Kea and dnsmasq (whichever is in use) | Names of devices the network scan only knows by MAC |
-| Hostname, version, CPU, memory, swap, load, disks, temperatures, uptime | Firewall health |
+| Hostname, version, CPU, memory (installed, used and %), swap, load, disks, temperatures, uptime | Firewall health |
 | Pending firmware updates (from the last check made in OPNsense) | Firewall health |
 | Gateways: status, latency, loss | WAN uplinks up/down |
 | VLANs: id, description, parent port, subnet; the VLAN id of each VLAN interface | VLANs of the network |
