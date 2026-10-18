@@ -34,7 +34,7 @@ Only when you create, change or delete a VLAN's network in Omini (the map's menu
   - **Whole network**: everything;
   - **No internet**: DNS to the gateway only.
 
-  Picking one of them replaces the rules of that interface; rules set by hand that are none of them show as **Custom** in Omini and are left as they are until you pick one. Rules Omini writes start with "Omini:".
+  Picking one of them replaces the rules of that interface (its own: a floating rule, on several interfaces, is no network's access and is never removed); rules set by hand that are none of them show as **Custom** in Omini and are left as they are until you pick one. Rules Omini writes start with "Omini:".
 - **Discovery between VLANs** (mDNS, part of `network.set`): the network joins or leaves the mDNS repeater of the **os-mdns-repeater** plugin (install it in System → Firmware → Plugins), which runs while two or more networks are in it.
 - **Fixed addresses** (`reservation.set`, `reservation.delete`): a DHCP reservation (Kea or dnsmasq) for a device's MAC, from the device's panel in Omini.
 - **Removing** it (`network.delete`): its rules, its DHCP, its discovery, its interface and its VLAN. Never the LAN.

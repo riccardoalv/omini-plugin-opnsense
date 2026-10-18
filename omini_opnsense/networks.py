@@ -166,6 +166,19 @@ def rules_on(st: State, ifname: str) -> list[dict[str, Any]]:
     ]
 
 
+def own_rules(st: State, ifname: str) -> list[dict[str, Any]]:
+    """The interface's rules that are its alone: a floating rule (several
+    interfaces, or all but some) serves others too, so it is no network's
+    access and Omini never deletes it."""
+    return [
+        r
+        for r in rules_on(st, ifname)
+        if text(r.get("interface")).lower().split(",") == [ifname]
+        and text(r.get("interfacenot")) != "1"
+        and text(r.get("floating")) != "1"
+    ]
+
+
 def rule_shape(r: dict[str, Any], ifname: str) -> str:
     """A rule as one of the presets' pieces: dns, block_private, pass_any or other."""
     action = text(r.get("action")).lower()
@@ -185,7 +198,7 @@ def rule_shape(r: dict[str, Any], ifname: str) -> str:
 
 def access_of(st: State, ifname: str) -> str:
     """Which of the three choices the interface's rules are, else custom."""
-    shapes = [rule_shape(r, ifname) for r in rules_on(st, ifname)]
+    shapes = [rule_shape(r, ifname) for r in own_rules(st, ifname)]
     if not shapes or "other" in shapes:
         return "custom"
     core = [s for s in shapes if s != "dns"]
@@ -401,7 +414,7 @@ def set_access(c: Client, st: State, ifname: str, access: str | None, name: str)
         return
     if access == "internet":
         ensure_private_alias(c)
-    for r in rules_on(st, ifname):
+    for r in own_rules(st, ifname):
         c.post(f"{RULES}/del_rule/{r['uuid']}")
     for r in preset_rules(access, ifname, name):
         c.post(f"{RULES}/add_rule", {"rule": r})
@@ -409,7 +422,7 @@ def set_access(c: Client, st: State, ifname: str, access: str | None, name: str)
 
 
 def drop_rules(c: Client, st: State, ifname: str) -> None:
-    for r in rules_on(st, ifname):
+    for r in own_rules(st, ifname):
         c.post(f"{RULES}/del_rule/{r['uuid']}")
     c.post(f"{RULES}/apply")
 

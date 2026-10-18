@@ -315,3 +315,21 @@ def test_discovery_needs_the_repeater_plugin(router, cfg):
     assert networks(collect_module.collect(cfg))[1].mdns is None
     with pytest.raises(PluginError, match="os-mdns-repeater"):
         collect_module.apply(cfg, Change(device="x", kind="network.set", value=iot40(mdns=True)))
+
+
+def test_shared_rules_are_no_network_s_access(router, cfg):
+    shared = {
+        "enabled": "1",
+        "action": "pass",
+        "interface": "lan,opt1",
+        "source_net": "",
+        "destination_net": "any",
+    }
+    router.rules["floating"] = dict(shared)
+    # A floating "pass any" serves both: VLAN 20 is not "all" for it.
+    assert networks(collect_module.collect(cfg))[20].access == "custom"
+    value = {"vlan": 20, "gateway": "10.0.20.1/24", "dhcp": {"enabled": False}, "access": "local"}
+    collect_module.apply(cfg, Change(device="x", kind="network.set", value=value))
+    collect_module.apply(cfg, Change(device="x", kind="network.delete", value={"vlan": 20}))
+    # Neither the change nor the removal touched the rule the LAN still needs.
+    assert router.rules["floating"] == shared
