@@ -21,7 +21,7 @@
 | Firewall state table: current entries and limit | A state table filling up |
 | Networks (26.7+): each VLAN's interface, gateway, DHCP range and access rules; the LAN is VLAN 1 | The VLANs tab: a VLAN as a whole network |
 | Link aggregations (LAGG): each member port and its `lagg` (members that are down too) | LAGs on the map |
-| Local DNS names: Unbound host overrides (A records), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
+| Local DNS names: Unbound host overrides (A records) and their host aliases (when the API user may read them), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
 | Paused devices (the `omini_paused_mac` alias, and simple block rules set by hand) | The pause mark on the map |
 | The configuration, `config.xml` (on demand, not every round) | The device's configuration history and its differences |
 
@@ -118,6 +118,7 @@ OPNsense uses a self-signed certificate by default, so *Verify the TLS certifica
 These API shapes come from OPNsense's source and documentation, and are tested against an emulation, not a real firewall:
 
 - Unbound host overrides: `search_host_override` rows with `hostname`, `domain`, `rr` (`A`, or `A (IPv4 address)` as the grid shows it) and `server`; `/api/unbound/settings/get` → `unbound.general.enabled`.
+- Unbound host aliases: `search_host_alias` rows with `enabled`, `host` (the override's uuid, or its name as an older grid shows it), `hostname` and `domain` (empty: the override's). An alias is changed in OPNsense: `dns.set` and `dns.delete` refuse its name.
 - dnsmasq as a DNS server: `/api/dnsmasq/settings/get` → `dnsmasq.enable`, `port` (0 = DNS off) and `domain`; hosts with `host`, `domain`, `ip`, `hwaddr`.
 - os-wol: `POST /api/wol/wol/set` with `{"wake": {"interface": "lan", "mac": "…"}}`.
 - Aliases: `set_item/{uuid}` and `del_item/{uuid}` with `mac` and `network` aliases whose `content` is newline separated; rules with `sequence`, `source_net` set to an alias and `destination_not`, and `ipprotocol: inet46`.
@@ -156,7 +157,7 @@ Reading is all `GET`; the changes are the `POST`s below ([API reference](https:/
 | `/api/mdnsrepeater/settings/get`, `set`, `/api/mdnsrepeater/service/reconfigure` | discovery between VLANs | os-mdns-repeater |
 | `/api/firewall/filter/search_rule`, `add_rule`, `del_rule`, `apply`, `/api/firewall/alias/search_item`, `add_item`, `reconfigure` | networks' access | [firewall](https://docs.opnsense.org/development/api/core/firewall.html) |
 | `/api/interfaces/lagg_settings/search_item` | link aggregation members | [interfaces](https://docs.opnsense.org/development/api/core/interfaces.html) |
-| `/api/unbound/settings/get`, `search_host_override`, `add_host_override`, `set_host_override`, `del_host_override`, `/api/unbound/service/reconfigure` | local DNS names (Unbound) | [unbound](https://docs.opnsense.org/development/api/core/unbound.html) |
+| `/api/unbound/settings/get`, `search_host_override`, `search_host_alias`, `add_host_override`, `set_host_override`, `del_host_override`, `/api/unbound/service/reconfigure` | local DNS names (Unbound) | [unbound](https://docs.opnsense.org/development/api/core/unbound.html) |
 | `/api/dnsmasq/settings/get`, `search_host`, `add_host`, `set_host`, `del_host`, `/api/dnsmasq/service/reconfigure` | local DNS names (dnsmasq) | [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
 | `/api/wol/wol/set` | Wake-on-LAN | [wol](https://docs.opnsense.org/development/api/plugins/wol.html) |
 | `/api/firewall/alias/set_item`, `del_item`, `/api/firewall/filter/add_rule`, `del_rule`, `apply`, `/api/diagnostics/firewall/kill_states` | pausing a device's internet | [firewall](https://docs.opnsense.org/development/api/core/firewall.html) |

@@ -51,6 +51,7 @@ class Firewall(Router):
                 "description": "",
             },
         }
+        self.host_aliases = None  # None: an OPNsense without the endpoint
         self.dnsmasq = {"enable": "0", "port": "0", "domain": "lan"}
         self.hosts = {}
         self.wol = True
@@ -65,6 +66,8 @@ class Firewall(Router):
             return 200, {"unbound": {"general": {"enabled": "1" if self.unbound_on else "0"}}}
         if path == "/api/unbound/settings/search_host_override":
             return 200, self.search(self.overrides)
+        if path == "/api/unbound/settings/search_host_alias" and self.host_aliases is not None:
+            return 200, self.search(self.host_aliases)
         if path == "/api/dnsmasq/settings/get":
             return 200, {"dnsmasq": dict(self.dnsmasq)}
         if path == "/api/dnsmasq/settings/search_host":
@@ -168,6 +171,48 @@ def test_reads_the_local_names_and_domain(fw, cfg):
     # The system's domain; A records only (the MX is not a name of a device).
     assert dev.dns_domain == "localdomain"
     assert names([dev]) == {("printer.localdomain", "192.168.1.30")}
+
+
+def aliases(fw):
+    fw.host_aliases = {
+        # host is the override's uuid; the domain, when empty, is the override's.
+        "a1": {"enabled": "1", "host": "h1", "hostname": "print", "domain": "", "description": ""},
+        "a2": {"enabled": "1", "host": "h1", "hostname": "scan", "domain": "home.arpa"},
+        # An older search grid shows the override's name instead of its uuid.
+        "a3": {"enabled": "1", "host": "Printer.localdomain", "hostname": "lp", "domain": ""},
+        "a4": {"enabled": "0", "host": "h1", "hostname": "off", "domain": "localdomain"},
+        "a5": {"enabled": "1", "host": "h2", "hostname": "smtp", "domain": "localdomain"},  # MX
+        "a6": {"enabled": "1", "host": "gone", "hostname": "lost", "domain": "localdomain"},
+    }
+
+
+def test_host_aliases_are_more_names_of_their_override(fw, cfg):
+    aliases(fw)
+    [dev] = collect_module.collect(cfg)
+    assert names([dev]) == {
+        ("printer.localdomain", "192.168.1.30"),
+        ("print.localdomain", "192.168.1.30"),
+        ("scan.home.arpa", "192.168.1.30"),
+        ("lp.localdomain", "192.168.1.30"),
+    }
+
+
+def test_host_aliases_are_optional(fw, opnsense, cfg):
+    aliases(fw)
+    opnsense.forbidden.add("/api/unbound/settings/search_host_alias")
+    [dev] = collect_module.collect(cfg)
+    assert names([dev]) == {("printer.localdomain", "192.168.1.30")}
+
+
+def test_a_host_alias_is_changed_in_opnsense(fw, cfg):
+    aliases(fw)
+    for kind, value in (
+        ("dns.set", {"name": "scan.home.arpa", "ip": "192.168.1.31"}),
+        ("dns.delete", {"name": "scan.home.arpa"}),
+    ):
+        with pytest.raises(PluginError, match=r"alias of the host override printer\.localdomain"):
+            apply(cfg, kind, value)
+    assert not fw.posts
 
 
 def test_sets_changes_and_removes_a_name_in_unbound(fw, cfg):

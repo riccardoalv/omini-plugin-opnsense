@@ -1,6 +1,6 @@
-"""Local DNS names on OPNsense: Unbound host overrides when Unbound is the
-DNS server, else dnsmasq hosts. Read every round (Device.dns_records) and
-changed by dns.set and dns.delete."""
+"""Local DNS names on OPNsense: Unbound host overrides (and their host
+aliases) when Unbound is the DNS server, else dnsmasq hosts. Read every round
+(Device.dns_records) and changed by dns.set and dns.delete."""
 
 from __future__ import annotations
 
@@ -82,11 +82,52 @@ def entries(c: Client, kind: str, domain: str | None) -> list[dict[str, Any]]:
     return out
 
 
+def alias_entries(c: Client, overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Unbound host aliases: more names of a host override, answering its
+    address. Their host is the override's uuid (or, in an older search grid,
+    its name). Optional: an API user without them, or no such endpoint, has
+    none."""
+    try:
+        found = rows(c, f"{UNBOUND}/search_host_alias")
+    except (Forbidden, NotFound):
+        return []
+    by_host: dict[str, dict[str, Any]] = {}
+    for e in overrides:
+        by_host[str(e.get("uuid") or "").lower()] = e
+        by_host.setdefault(e["name"], e)
+    by_host.pop("", None)
+    out = []
+    for r in found:
+        if text(r.get("enabled")) in ("0", "false"):
+            continue
+        refs = (text(r.get("host")), text(r.get("%host")))
+        owner = next((by_host[h.lower()] for h in refs if h.lower() in by_host), None)
+        host = text(r.get("hostname"))
+        if owner is None or not host or host == "*":
+            continue
+        dom = text(r.get("domain")) or owner["name"].partition(".")[2]
+        out.append({"name": f"{host}.{dom}".lower(), "ip": owner["ip"], "of": owner["name"]})
+    return out
+
+
+def check_not_alias(c: Client, kind: str, fqdn: str, domain: str | None) -> None:
+    if kind != "unbound":
+        return
+    alias = next((a for a in alias_entries(c, entries(c, kind, domain)) if a["name"] == fqdn), None)
+    if alias is not None:
+        raise PluginError(
+            f"{fqdn} is an alias of the host override {alias['of']} in OPNsense: change it there"
+        )
+
+
 def records(c: Client, domain: str | None) -> list[dict[str, str]]:
     kind = server(c)
     if kind is None:
         return []
-    found = {(e["name"], e["ip"]) for e in entries(c, kind, domain)}
+    names = entries(c, kind, domain)
+    if kind == "unbound":
+        names += alias_entries(c, names)
+    found = {(e["name"], e["ip"]) for e in names}
     return [{"name": n, "ip": ip} for n, ip in sorted(found)]
 
 
@@ -112,6 +153,8 @@ def set_name(c: Client, want: dict[str, Any], domain: str | None) -> str:
         raise PluginError("an IPv4 address is needed for the name")
     fqdn = f"{host}.{dom}"
     current = next((e for e in entries(c, kind, domain) if e["name"] == fqdn), None)
+    if current is None:
+        check_not_alias(c, kind, fqdn, domain)
     if kind == "unbound":
         body = {
             "host": {
@@ -154,6 +197,7 @@ def delete_name(c: Client, name: str, domain: str | None) -> str:
     fqdn = f"{host}.{dom}"
     found = [e for e in entries(c, kind, domain) if e["name"] == fqdn]
     if not found:
+        check_not_alias(c, kind, fqdn, domain)
         return fqdn
     for e in found:
         if kind == "unbound":
