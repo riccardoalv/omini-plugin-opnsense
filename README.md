@@ -9,10 +9,11 @@
 | Interfaces: name, description, status, enabled or disabled, MAC, IPs, **link speed / media** (e.g. `2500Base-T <full-duplex>`), traffic and error counters | Ports of the firewall on the map, link speed, traffic |
 | ARP table | Which IP and MAC are on which interface |
 | NDP table (IPv6 neighbours) | Which IPv6 address belongs to which MAC, so traffic over IPv6 reaches the right device |
-| DHCP leases — ISC, Kea and dnsmasq (whichever is in use) | Names of devices the network scan only knows by MAC |
+| DHCP leases — ISC, Kea and dnsmasq (whichever is in use), IPv4 and **DHCPv6** (Kea's and ISC's DHCPv6 leases, and dnsmasq's, when the server knows the device's MAC; delegated prefixes are left out) | Names of devices the network scan only knows by MAC |
+| The firewall's own addresses, IPv4 and IPv6 (link-local left out) | Merging the firewall with what other devices see of it |
 | Hostname, version, CPU, memory (installed, used and %), swap, load, disks, temperatures, uptime | Firewall health |
 | Pending firmware updates (from the last check made in OPNsense) | Firewall health |
-| Gateways: status, latency, loss | WAN uplinks up/down |
+| Gateways, IPv4 and IPv6 (e.g. `WAN_DHCP6`): status, latency, loss | WAN uplinks up/down |
 | VLANs: id, description, parent port, subnet; the VLAN id of each VLAN interface | VLANs of the network |
 | SFP/QSFP modules: vendor, part and serial number, type, temperature, voltage, RX power and laser bias (when the NIC driver reads the module) | Health of optical links |
 | Services: running or stopped | A service that stopped |
@@ -21,7 +22,7 @@
 | Firewall state table: current entries and limit | A state table filling up |
 | Networks (26.7+): each VLAN's interface, gateway, DHCP range and access rules; the LAN is VLAN 1 | The VLANs tab: a VLAN as a whole network |
 | Link aggregations (LAGG): each member port and its `lagg` (members that are down too) | LAGs on the map |
-| Local DNS names: Unbound host overrides (A records) and their host aliases (when the API user may read them), or dnsmasq hosts when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
+| Local DNS names: Unbound host overrides (A and AAAA records) and their host aliases (when the API user may read them), or dnsmasq hosts (their IPv4 and IPv6 addresses) when dnsmasq is the DNS server; the local domain (the system's domain, else dnsmasq's) | Names of devices with a fixed address |
 | Paused devices (the `omini_paused_mac` alias, and simple block rules set by hand) | The pause mark on the map |
 | Port forwards (Firewall → NAT → Destination NAT, 25.7+): protocol, WAN interface, external port or range, the device's address and port, who may use it, description, on or off | The router's **Exposed to the internet** section and its alerts (Omini never changes them) |
 | The configuration, `config.xml` (on demand, not every round) | The device's configuration history and its differences |
@@ -42,7 +43,7 @@ Only when you create, change or delete a VLAN's network in Omini (the map's menu
 
 Also, on any supported version:
 
-- **Local DNS names** (`dns.set`, `dns.delete`): an Unbound host override (an A record, description "Omini") when Unbound is the DNS server, else a dnsmasq host; changing a name's address changes the same entry. Names set by hand are read too. A dnsmasq host that is also a fixed address (it has a MAC) is never removed by `dns.delete`: free the address instead.
+- **Local DNS names** (`dns.set`, `dns.delete`): an Unbound host override (an A record, description "Omini") when Unbound is the DNS server, else a dnsmasq host; changing a name's address changes the same entry. Names set by hand are read too. Omini writes **A records only**: an AAAA record (or a dnsmasq host's IPv6 address) is read and never changed or removed — `dns.delete` of a name that also has one removes its A record (or its IPv4 address) and keeps the rest. A dnsmasq host that is also a fixed address (it has a MAC) is never removed by `dns.delete`: free the address instead.
 - **Wake-on-LAN** (`wol.send`): the firewall sends the magic packet on the interface whose network holds the device's address (the LAN when it has none), through the **os-wol** plugin (install it in System → Firmware → Plugins). Without it, Omini says so.
 - **Configuration backups**: Omini keeps the versions of `config.xml` (System → Configuration → Backups' download), without the `<revision>` stamp OPNsense writes on every save, so two backups differ only when the configuration did. It holds secrets (password hashes, keys): Omini stores it encrypted and never restores it.
 
@@ -73,6 +74,8 @@ Use a dedicated user with only the privileges Omini needs, as the [OPNsense docs
    | Diagnostics: ARP Table | ARP table |
    | Status: DHCP leases | leases of ISC DHCP (on 26.1+: *Services: ISC DHCPv4: Leases*) |
    | Services: DHCP: Kea(v4) | leases of Kea, if you use it |
+   | Services: DHCP: Kea(v6) | DHCPv6 leases of Kea, if you use it (optional) |
+   | Status: ISC DHCPv6: Leases | DHCPv6 leases of ISC DHCP, if you use it (optional) |
    | Services: Dnsmasq DNS/DHCP: Settings | leases of dnsmasq (the default DHCP server since 25.7) |
    | System: Gateways | gateway status |
    | System: Firmware | pending updates (Omini never starts a check or an update) |
@@ -130,6 +133,8 @@ These API shapes come from OPNsense's source and documentation, and are tested a
 - `GET /api/core/backup/download/this` answering `config.xml`, and the privilege that grants it.
 - `/api/interfaces/lagg_settings/search_item` rows with `laggif` and `members`.
 - Destination NAT: `GET /api/firewall/d_nat/search_rule` rows with `disabled`, `nordr`, `interface` (comma separated identifiers), `protocol` (`tcp`, `udp`, `tcp/udp`), `source.network`, `source.not`, `destination.port`, `target`, `local-port` and `descr`, as the controller flattens the model; and the privilege *Firewall: NAT: Destination NAT*.
+- DHCPv6 leases: `GET /api/kea/leases6/search` rows with `address`, `hwaddr`, `hostname`, `state` (0 = active), `expire`, `type` and `prefix_len` (as Kea's leases4); `GET /api/dhcpv6/leases/search_lease` (os-isc-dhcp) rows with `address`, `mac`, `state` and `lease_type` (`ia-pd` for a delegated prefix); dnsmasq's leases with an IPv6 `address` and a MAC in `hwaddr`.
+- Unbound AAAA host overrides: `rr` `AAAA` (or `AAAA (IPv6 address)`) with the IPv6 address in `server`; dnsmasq hosts with several comma separated addresses in `ip`, and that `set_host` with only IPv6 addresses keeps the host.
 - `GET /api/diagnostics/interface/get_ndp` answering a list of `{mac, ip, intf}` (or `{rows: [...]}`), and that the *Diagnostics: NDP Table* privilege grants it.
 
 ## API endpoints used
@@ -145,7 +150,7 @@ Reading is all `GET`; the changes are the `POST`s below ([API reference](https:/
 | `/api/diagnostics/interface/get_ndp` | NDP (IPv6 neighbours) | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
 | `/api/diagnostics/interface/search_arp` | ARP | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
 | `/api/diagnostics/firewall/pf_statistics/info`, `pf_statistics/memory` | state table entries and limit | [diagnostics](https://docs.opnsense.org/development/api/core/diagnostics.html) |
-| `/api/dhcpv4/leases/search_lease`, `/api/kea/leases4/search`, `/api/dnsmasq/leases/search` | DHCP leases | [kea](https://docs.opnsense.org/development/api/core/kea.html), [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
+| `/api/dhcpv4/leases/search_lease`, `/api/kea/leases4/search`, `/api/dnsmasq/leases/search`, `/api/kea/leases6/search`, `/api/dhcpv6/leases/search_lease` | DHCP and DHCPv6 leases | [kea](https://docs.opnsense.org/development/api/core/kea.html), [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
 | `/api/kea/dhcpv4/search_subnet`, `/api/dnsmasq/settings/search_range` | DHCP ranges | [kea](https://docs.opnsense.org/development/api/core/kea.html), [dnsmasq](https://docs.opnsense.org/development/api/core/dnsmasq.html) |
 | `/api/routes/gateway/status` | gateways | [routes](https://docs.opnsense.org/development/api/core/routes.html) |
 | `/api/core/firmware/status` | pending updates | [core](https://docs.opnsense.org/development/api/core/core.html) |

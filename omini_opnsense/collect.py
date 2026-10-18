@@ -429,15 +429,39 @@ def ndp(c: Client) -> list[ArpEntry]:
     return out
 
 
+def ip_key(ip: str) -> tuple[int, int]:
+    """Sorts IPv4 before IPv6, each by its value."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return (9, 0)
+    return (a.version, int(a))
+
+
+def delegated_prefix(r: dict[str, Any]) -> bool:
+    """A DHCPv6 prefix delegation (IA_PD), not a device's address."""
+    for key in ("type", "lease_type"):  # Kea: type IA_PD (or 2); ISC: lease_type ia-pd
+        if str(r.get(key) or "").strip().upper().replace("-", "_") in ("2", "IA_PD"):
+            return True
+    plen = str(r.get("prefix_len") or "").strip()
+    return bool(plen) and plen != "128"
+
+
 def leases(c: Client, missing: list[str]) -> list[DhcpLease]:
-    """Leases of every DHCP server in use (ISC, Kea, dnsmasq), merged."""
+    """Leases of every DHCP server in use (ISC, Kea, dnsmasq), IPv4 and
+    DHCPv6, merged. A DHCPv6 lease is kept only when the server knows the
+    device's MAC (Kea's hwaddr, ISC's from NDP or the DUID)."""
     now = time.time()
     found: dict[tuple[str, str], DhcpLease] = {}
     forbidden = 0
 
     def add(ip: Any, hw: Any, host: Any, expires: float | None = None) -> None:
         m = mac(hw)
-        if not m or not isinstance(ip, str) or not ip or ":" in ip:  # IPv4 leases
+        if not m or not isinstance(ip, str) or not ip:
+            return
+        try:
+            ip = str(ipaddress.ip_address(ip.strip()))
+        except ValueError:
             return
         name = host if isinstance(host, str) and host not in ("", "*") else None
         at = (
@@ -475,9 +499,36 @@ def leases(c: Client, missing: list[str]) -> list[DhcpLease]:
                 if expire and expire < now:
                     continue
                 add(r.get("address"), r.get("hwaddr"), r.get("hostname"), expire)
+    for path, params in DHCPV6_SOURCES.items():
+        try:
+            v6 = c.get(path, params=params)
+        except (Forbidden, NotFound):  # DHCPv6 is optional: its privilege too
+            continue
+        except PluginError as e:
+            log.info("could not read %s: %s", path, e)
+            continue
+        for r in (v6.get("rows") or []) if isinstance(v6, dict) else []:
+            if delegated_prefix(r):
+                continue
+            if path == "/api/dhcpv6/leases/search_lease":  # ISC DHCPv6
+                if r.get("state") not in (None, "active") and r.get("type") != "static":
+                    continue
+                add(r.get("address"), r.get("mac"), r.get("hostname"))
+                continue
+            expire = number(r.get("expire"))  # Kea memfile
+            if str(r.get("state")) != "0" or (expire and expire < now):
+                continue
+            add(r.get("address"), r.get("hwaddr"), r.get("hostname"), expire)
     if forbidden == len(sources):
         missing.append(PRIVILEGES["dhcp"])
-    return sorted(found.values(), key=lambda lease: tuple(int(p) for p in lease.ip.split(".")))
+    return sorted(found.values(), key=lambda lease: ip_key(lease.ip))
+
+
+# DHCPv6 leases: Kea's, and ISC's (the os-isc-dhcp plugin on 26.1+).
+DHCPV6_SOURCES = {
+    "/api/kea/leases6/search": {"rowCount": -1},
+    "/api/dhcpv6/leases/search_lease": {"inactive": 0, "rowCount": -1},
+}
 
 
 GATEWAY_STATUS = {
@@ -1116,7 +1167,7 @@ def dhcp_pools(c: Client, ifaces: list[Interface], active: list[DhcpLease]) -> l
     ):
         for network, found in quiet(what, read, {}).items():
             ranges.setdefault(network, []).extend(found)
-    leased = {ipaddress.IPv4Address(lease.ip) for lease in active}
+    leased = {ipaddress.IPv4Address(lease.ip) for lease in active if "." in lease.ip}
     out = []
     for network, rs in ranges.items():
         total = sum(int(b) - int(a) + 1 for a, b in rs)
@@ -1273,7 +1324,7 @@ def collect(cfg: Config) -> list[Device]:
         versions = info.get("versions") or []
         os_version = versions[0].rsplit("-", 1)[0] if versions else None
         macs = sorted({i.mac for i in ifaces if i.mac})
-        ips = sorted({ip.split("/")[0] for i in ifaces for ip in (i.ips or []) if "." in ip})
+        ips = sorted({ip.split("/")[0] for i in ifaces for ip in i.ips or []}, key=ip_key)
         host = urlparse(c.base).hostname or c.base
         clock = optional("system", missing, lambda: system_time(c), {})
         dhcp = leases(c, missing)
@@ -1385,7 +1436,7 @@ def apply_dns(c: Client, kind: str, value: dict[str, Any]) -> None:
         return
     fqdn = dns.delete_name(c, str(value.get("name") or ""), domain)
     nets.wait_for(
-        lambda: not any(r["name"] == fqdn for r in dns.records(c, domain)),
+        lambda: not any(r["name"] == fqdn and dns.ipv4(r["ip"]) for r in dns.records(c, domain)),
         f"the removal of {fqdn}",
     )
 

@@ -15,7 +15,8 @@ def test_reads_the_firewall(opnsense, cfg):
     assert fw.mem_pct == 25.0
     assert fw.mem_total_bytes == 8264171520 and fw.mem_used_bytes == 2066042880
     assert fw.cpu_pct == 3  # the second sample, not the average since boot
-    assert fw.ips == ["10.0.20.1", "192.168.1.1", "203.0.113.10"]
+    # IPv4 then IPv6 (link-local left out).
+    assert fw.ips == ["10.0.20.1", "192.168.1.1", "203.0.113.10", "fd00::1"]
 
 
 def test_memory_without_a_total_is_left_empty(opnsense, cfg):
@@ -68,6 +69,7 @@ def test_arp_and_leases_from_every_dhcp_server(opnsense, cfg):
         ("192.168.1.100", "phone"),  # ISC
         ("192.168.1.102", "tv"),  # dnsmasq, never expires
         ("192.168.1.103", None),  # dnsmasq, unknown name
+        ("fd00::50", "v6"),  # dnsmasq DHCPv6, with the device's MAC
     ]
     assert fw.dhcp_leases[2].expires_at.isoformat() == "2100-01-01T00:00:00+00:00"
 

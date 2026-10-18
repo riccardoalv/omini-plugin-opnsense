@@ -1,0 +1,5 @@
+{"total":3,"rowCount":3,"current":1,"rows":[
+ {"type":"dynamic","lease_type":"ia-na","iaid":"3045832","duid":"00:01:00:01:2c:1f:aa:bb:aa:bb:cc:dd:ee:0a","iaid_duid":"","descr":"","if":"lan","cltt":"2026/10/18 10:00:00","state":"active","ends":"2026/10/19 10:00:00","address":"2001:db8:1::2000","status":"online","man":"Apple","mac":"aa:bb:cc:dd:ee:0a","if_descr":"LAN"},
+ {"type":"dynamic","lease_type":"ia-na","iaid":"1","duid":"00:01:00:01:2c:1f:aa:bb:aa:bb:cc:dd:ee:0b","descr":"","if":"lan","state":"expired","address":"2001:db8:1::2001","status":"offline","man":"","mac":"aa:bb:cc:dd:ee:0b"},
+ {"type":"dynamic","lease_type":"ia-pd","iaid":"2","duid":"00:01:00:01:2c:1f:aa:bb:aa:bb:cc:dd:ee:0c","descr":"","if":"lan","state":"active","address":"2001:db8:fe00::","status":"offline","man":"","mac":"aa:bb:cc:dd:ee:0c"}
+]}

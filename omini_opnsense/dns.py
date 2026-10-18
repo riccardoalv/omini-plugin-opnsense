@@ -1,6 +1,8 @@
 """Local DNS names on OPNsense: Unbound host overrides (and their host
 aliases) when Unbound is the DNS server, else dnsmasq hosts. Read every round
-(Device.dns_records) and changed by dns.set and dns.delete."""
+(Device.dns_records, A and AAAA records) and changed by dns.set and
+dns.delete, which only ever write A records: the IPv6 names others made are
+kept, never changed or removed."""
 
 from __future__ import annotations
 
@@ -47,38 +49,47 @@ def domain_of(system_name: str, c: Client | None = None) -> str | None:
     return dom or None
 
 
+def rr_of(rr: Any) -> str:
+    """'A', or 'A (IPv4 address)' as the search grid shows it → 'A'."""
+    return text(rr).split(" ")[0].upper() or "A"
+
+
 def is_a(rr: Any) -> bool:
-    """'A', or 'A (IPv4 address)' as the search grid shows it; never AAAA or MX."""
-    v = text(rr).split(" ")[0].upper()
-    return v in ("A", "")
+    """An A record; never AAAA or MX."""
+    return rr_of(rr) == "A"
 
 
-def entries(c: Client, kind: str, domain: str | None) -> list[dict[str, Any]]:
-    """Each local name: {uuid, name (fully qualified), ip, hwaddr}."""
+def ipv4(ip: str) -> bool:
+    return "." in ip and ":" not in ip
+
+
+def entries(c: Client, kind: str, domain: str | None, v6: bool = False) -> list[dict[str, Any]]:
+    """Each local name: {uuid, name (fully qualified), ip, hwaddr}: its A
+    records, and with v6 its AAAA records too (those are only read). A dnsmasq
+    host's IPv4 entry keeps its IPv6 addresses in ``v6``."""
     out = []
     if kind == "unbound":
         for r in rows(c, f"{UNBOUND}/search_host_override"):
             host, dom, ip = text(r.get("hostname")), text(r.get("domain")), text(r.get("server"))
-            if text(r.get("enabled")) in ("0", "false") or not is_a(r.get("rr")) or "." not in ip:
+            if text(r.get("enabled")) in ("0", "false") or not host or host == "*":
                 continue
-            if not host or host == "*":
-                continue
-            out.append({"uuid": r.get("uuid"), "name": f"{host}.{dom}".lower(), "ip": ip})
+            rr = rr_of(r.get("rr"))
+            if (rr == "A" and ipv4(ip)) or (v6 and rr == "AAAA" and ":" in ip):
+                out.append({"uuid": r.get("uuid"), "name": f"{host}.{dom}".lower(), "ip": ip})
     elif kind == "dnsmasq":
         for r in rows(c, f"{DNSMASQ}/search_host"):
-            host, ip = text(r.get("host")), text(r.get("ip")).split(",")[0]
-            if not host or "." not in ip:
+            host = text(r.get("host"))
+            ips = [i.strip() for i in text(r.get("ip")).split(",") if i.strip()]
+            v4s, v6s = [i for i in ips if ipv4(i)], [i for i in ips if ":" in i]
+            if not host:
                 continue
             dom = text(r.get("domain")) or domain or ""
-            name = f"{host}.{dom}" if dom else host
-            out.append(
-                {
-                    "uuid": r.get("uuid"),
-                    "name": name.lower(),
-                    "ip": ip,
-                    "hwaddr": text(r.get("hwaddr")),
-                }
-            )
+            name = (f"{host}.{dom}" if dom else host).lower()
+            base = {"uuid": r.get("uuid"), "name": name, "hwaddr": text(r.get("hwaddr"))}
+            if v4s:
+                out.append({**base, "ip": v4s[0], "v6": v6s})
+            if v6:
+                out += [{**base, "ip": ip} for ip in v6s]
     return out
 
 
@@ -113,7 +124,8 @@ def alias_entries(c: Client, overrides: list[dict[str, Any]]) -> list[dict[str, 
 def check_not_alias(c: Client, kind: str, fqdn: str, domain: str | None) -> None:
     if kind != "unbound":
         return
-    alias = next((a for a in alias_entries(c, entries(c, kind, domain)) if a["name"] == fqdn), None)
+    found = alias_entries(c, entries(c, kind, domain, v6=True))
+    alias = next((a for a in found if a["name"] == fqdn), None)
     if alias is not None:
         raise PluginError(
             f"{fqdn} is an alias of the host override {alias['of']} in OPNsense: change it there"
@@ -124,7 +136,7 @@ def records(c: Client, domain: str | None) -> list[dict[str, str]]:
     kind = server(c)
     if kind is None:
         return []
-    names = entries(c, kind, domain)
+    names = entries(c, kind, domain, v6=True)
     if kind == "unbound":
         names += alias_entries(c, names)
     found = {(e["name"], e["ip"]) for e in names}
@@ -178,6 +190,8 @@ def set_name(c: Client, want: dict[str, Any], domain: str | None) -> str:
     if current is None:
         c.post(f"{DNSMASQ}/add_host", body)
     elif current["ip"] != ip:
+        # Its IPv6 addresses stay.
+        body["host"]["ip"] = ",".join([ip, *current.get("v6", [])])
         if current.get("hwaddr"):
             # The entry is also a fixed address: keep its MAC and name.
             body["host"].pop("descr")
@@ -207,6 +221,9 @@ def delete_name(c: Client, name: str, domain: str | None) -> str:
                 f"{fqdn} is the name of the fixed address of {e['hwaddr']}: "
                 "free the address to remove it"
             )
+        elif e.get("v6"):
+            # Only the IPv4 address goes: the host keeps answering its IPv6 ones.
+            c.post(f"{DNSMASQ}/set_host/{e['uuid']}", {"host": {"ip": ",".join(e["v6"])}})
         else:
             c.post(f"{DNSMASQ}/del_host/{e['uuid']}")
     c.post(f"/api/{kind}/service/reconfigure")
