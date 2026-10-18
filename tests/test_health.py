@@ -34,6 +34,15 @@ def test_pending_firmware_updates(opnsense, cfg):
     assert f.checked_at is not None and f.checked_at.isoformat() == "2026-10-07T02:54:18-04:00"
 
 
+def test_a_check_time_without_offset_is_utc(opnsense, cfg):
+    check = opnsense.routes["/api/core/firmware/status"]["product"]["product_check"]
+    check["last_check"] = "Wed Oct 7 2:54:18 UTC 2026"
+    [fw] = collect(cfg)
+    assert fw.firmware is not None and fw.firmware.latest == "26.7.5"
+    assert fw.firmware.checked_at.isoformat() == "2026-10-07T02:54:18+00:00"
+    assert parse_time("2026-10-01T03:22:51") == "2026-10-01T03:22:51+00:00"
+
+
 def test_never_checked_for_updates(opnsense, cfg):
     # As answered by a firewall where nobody pressed "Check for updates" yet.
     opnsense.routes["/api/core/firmware/status"] = {

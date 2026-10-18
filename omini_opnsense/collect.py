@@ -695,20 +695,25 @@ def firmware(c: Client) -> Firmware | None:
 
 
 def parse_time(text: Any) -> str | None:
-    """OPNsense dates ('Wed Oct 7 2:54:18 -04 2026', or ISO) → ISO 8601."""
+    """OPNsense dates ('Wed Oct 7 2:54:18 -04 2026', or ISO) → ISO 8601, with
+    an offset (UTC when the date has none, as for 'UTC' or a naive ISO date)."""
     if not isinstance(text, str) or not text.strip():
         return None
     t = text.strip()
     for fmt in ("%a %b %d %H:%M:%S %z %Y", "%a %b %d %H:%M:%S %Z %Y"):
         try:
             v = re.sub(r" ([+-]\d{2})(?= \d{4}$)", r" \g<1>00", t)
-            return datetime.strptime(v, fmt).isoformat()
+            return aware(datetime.strptime(v, fmt)).isoformat()
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(t).isoformat()
+        return aware(datetime.fromisoformat(t)).isoformat()
     except ValueError:
         return None
+
+
+def aware(d: datetime) -> datetime:
+    return d if d.tzinfo is not None else d.replace(tzinfo=timezone.utc)
 
 
 def cpu_pct(c: Client) -> float | None:
